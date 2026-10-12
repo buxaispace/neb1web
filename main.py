@@ -1,4 +1,5 @@
 import os
+import base64
 from typing import List, Optional
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
@@ -18,6 +19,10 @@ client = Groq(api_key=API_KEY) if API_KEY else None
 
 MODEL_NAME = "Nebula 1"
 FULL_IDENTITY = "Nebula 1"
+
+# Chat model (smart) + vision model (cheap & capable)
+CHAT_MODEL = "openai/gpt-oss-120b"
+VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 SYSTEM_PROMPT = f"""
 CRITICAL INSTRUCTION: You are NOT ChatGPT. You are NOT OpenAI.
@@ -95,7 +100,7 @@ async def chat(message: str = Form(...)):
 
     try:
         completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model=CHAT_MODEL,
             messages=chat_history,
             temperature=0.5,
         )
@@ -112,9 +117,8 @@ async def chat(message: str = Form(...)):
 @app.post("/upload")
 async def upload_image(file: UploadFile = File(...), caption: Optional[str] = Form(None)):
     """
-    Accept an image from phone/tablet camera or file picker.
-    For now we acknowledge the upload and optionally pass a text caption
-    to the chat model. (True vision requires a vision-capable model.)
+    1. Vision model (Llama 4 Scout) describes the image
+    2. 120B replies as Nebula 1 using that description
     """
     global chat_history
 
@@ -122,20 +126,59 @@ async def upload_image(file: UploadFile = File(...), caption: Optional[str] = Fo
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
     content = await file.read()
-    # Keep under ~4 MB for free tier friendliness
     if len(content) > 4 * 1024 * 1024:
         return JSONResponse({"error": "Image too large (max 4 MB)"}, status_code=400)
 
-    # Build a text note about the image so the model can respond
-    note = f"[User uploaded an image: {file.filename or 'photo'}]"
+    # Detect mime type
+    mime = file.content_type or "image/jpeg"
+    if mime not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+        mime = "image/jpeg"
+
+    # Base64 data URL for the vision model
+    b64 = base64.b64encode(content).decode("utf-8")
+    data_url = f"data:{mime};base64,{b64}"
+
+    # ---- Step 1: Vision model describes the image ----
+    try:
+        vision_completion = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Describe this image in clear detail. "
+                                "Include important objects, text, colors, setting, and any notable details. "
+                                "Be factual and thorough but concise."
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_url},
+                        },
+                    ],
+                }
+            ],
+            temperature=0.2,
+            max_tokens=500,
+        )
+        image_description = vision_completion.choices[0].message.content.strip()
+    except Exception as e:
+        return JSONResponse({"error": f"Vision error: {e}"}, status_code=500)
+
+    # ---- Step 2: Build the message for 120B ----
+    note = f"[User uploaded an image]\nImage description: {image_description}"
     if caption and caption.strip():
-        note += f"\nUser caption: {caption.strip()}"
+        note += f"\nUser said: {caption.strip()}"
 
     chat_history.append({"role": "user", "content": note})
 
+    # ---- Step 3: 120B replies as Nebula 1 ----
     try:
         completion = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+            model=CHAT_MODEL,
             messages=chat_history,
             temperature=0.5,
         )
