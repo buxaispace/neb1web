@@ -10,7 +10,7 @@ from groq import Groq
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-API_KEY = os.getenv("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", "")
+API_KEY = os.getenv("GROQ_API_KEY", "")
 if not API_KEY:
     print("WARNING: GROQ_API_KEY environment variable is not set.")
 
