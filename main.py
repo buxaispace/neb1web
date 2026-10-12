@@ -95,7 +95,7 @@ async def chat(message: str = Form(...)):
 
     try:
         completion = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+            model="openai/gpt-oss-120b",
             messages=chat_history,
             temperature=0.5,
         )
