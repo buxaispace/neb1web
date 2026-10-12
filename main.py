@@ -22,7 +22,7 @@ FULL_IDENTITY = "Nebula 1"
 
 # Chat model (smart) + vision model (cheap & capable)
 CHAT_MODEL = "openai/gpt-oss-120b"
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+VISION_MODEL = "qwen/qwen3.8-27b"
 
 SYSTEM_PROMPT = f"""
 CRITICAL INSTRUCTION: You are NOT ChatGPT. You are NOT OpenAI.
