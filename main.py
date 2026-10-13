@@ -1,5 +1,6 @@
 import os
 import base64
+import io
 from typing import List, Optional
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
@@ -7,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from groq import Groq
+from PIL import Image
 
 # ---------------------------------------------------------------------------
 # Config
@@ -24,7 +26,6 @@ FULL_IDENTITY = "Nebula 1"
 CHAT_MODEL = "openai/gpt-oss-120b"
 VISION_MODEL = "qwen/qwen3.8-27b"
 
-# Define limits: 20 MB (20 * 1024 * 1024 bytes)
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
 SYSTEM_PROMPT = f"""
@@ -113,7 +114,7 @@ async def chat(message: str = Form(...)):
             messages=chat_history,
             temperature=0.5,
         )
-        raw = completion.choices[0].message.content
+        raw = completion.choices.message.content
         final = sanitize_response(raw)
         chat_history.append({"role": "assistant", "content": final})
         return JSONResponse({"reply": final})
@@ -125,18 +126,13 @@ async def chat(message: str = Form(...)):
 
 @app.post("/upload")
 async def upload_image(file: UploadFile = File(...), caption: Optional[str] = Form(None)):
-    """
-    1. Vision model (Llama 4 Scout) describes the image
-    2. 120B replies as Nebula 1 using that description
-    """
     global chat_history
 
     if not client:
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
-    # Read chunks iteratively to check the size constraint safely without overloading RAM
     content = b""
-    chunk_size = 1024 * 1024  # 1 MB chunks
+    chunk_size = 1024 * 1024
     
     try:
         while chunk := await file.read(chunk_size):
@@ -146,16 +142,21 @@ async def upload_image(file: UploadFile = File(...), caption: Optional[str] = Fo
     finally:
         await file.close()
 
-    # Detect mime type
-    mime = file.content_type or "image/jpeg"
-    if mime not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+    try:
+        img = Image.open(io.BytesIO(content))
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        img.thumbnail((2048, 2048))
+        compressed_buffer = io.BytesIO()
+        img.save(compressed_buffer, format="JPEG", quality=85, optimize=True)
+        content = compressed_buffer.getvalue()
         mime = "image/jpeg"
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to process or compress image: {e}"}, status_code=400)
 
-    # Base64 data URL for the vision model
     b64 = base64.b64encode(content).decode("utf-8")
     data_url = f"data:{mime};base64,{b64}"
 
-    # ---- Step 1: Vision model describes the image ----
     try:
         vision_completion = client.chat.completions.create(
             model=VISION_MODEL,
@@ -181,25 +182,23 @@ async def upload_image(file: UploadFile = File(...), caption: Optional[str] = Fo
             temperature=0.2,
             max_tokens=500,
         )
-        image_description = vision_completion.choices[0].message.content.strip()
+        image_description = vision_completion.choices.message.content.strip()
     except Exception as e:
         return JSONResponse({"error": f"Vision error: {e}"}, status_code=500)
 
-    # ---- Step 2: Build the message for 120B ----
     note = f"[User uploaded an image]\nImage description: {image_description}"
     if caption and caption.strip():
         note += f"\nUser said: {caption.strip()}"
 
     chat_history.append({"role": "user", "content": note})
 
-    # ---- Step 3: 120B replies as Nebula 1 ----
     try:
         completion = client.chat.completions.create(
             model=CHAT_MODEL,
             messages=chat_history,
             temperature=0.5,
         )
-        raw = completion.choices[0].message.content
+        raw = completion.choices.message.content
         final = sanitize_response(raw)
         chat_history.append({"role": "assistant", "content": final})
         return JSONResponse({
