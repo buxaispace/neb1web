@@ -41,6 +41,100 @@
       margin: 0 auto;
     }
 
+    /* ---------- Auth screen ---------- */
+    #auth-screen {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .auth-card {
+      width: 100%;
+      max-width: 360px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px 24px;
+    }
+
+    .auth-card h1 {
+      font-size: 1.4rem;
+      margin-bottom: 4px;
+    }
+
+    .auth-card .sub {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 20px;
+    }
+
+    .auth-card label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .auth-card input {
+      width: 100%;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 1rem;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      outline: none;
+    }
+
+    .auth-card input:focus {
+      border-color: var(--blue);
+    }
+
+    .auth-card .btn-primary {
+      width: 100%;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 12px;
+      font-weight: 600;
+      font-size: 1rem;
+      cursor: pointer;
+      margin-top: 4px;
+    }
+
+    .auth-card .btn-primary:hover { background: #2563eb; }
+
+    .auth-toggle {
+      text-align: center;
+      margin-top: 16px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .auth-toggle a {
+      color: var(--blue);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .auth-error {
+      color: var(--danger);
+      font-size: 0.85rem;
+      margin-bottom: 12px;
+      display: none;
+    }
+
+    /* ---------- Chat UI ---------- */
+    #chat-screen {
+      display: none;
+      flex-direction: column;
+      height: 100%;
+    }
+
     header {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
@@ -71,10 +165,37 @@
       font-weight: 500;
     }
 
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
     #status {
       font-size: 0.8rem;
       color: var(--green);
     }
+
+    #user-email {
+      font-size: 0.75rem;
+      color: var(--muted);
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #logout-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.75rem;
+      padding: 4px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    #logout-btn:hover { color: var(--text); border-color: var(--muted); }
 
     #chat {
       flex: 1;
@@ -158,7 +279,6 @@
       cursor: pointer;
       color: #fff;
       flex-shrink: 0;
-      transition: background 0.15s;
     }
 
     .btn:active { transform: scale(0.97); }
@@ -184,7 +304,7 @@
     #file-input { display: none; }
 
     .preview {
-      margin-top: 8px;
+      margin-bottom: 8px;
       display: none;
       align-items: center;
       gap: 10px;
@@ -234,43 +354,85 @@
         padding-bottom: max(14px, env(safe-area-inset-bottom));
       }
     }
+
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
-  <header>
-    <div class="title">
-      Nebula 1
-      <span class="badge">web</span>
-    </div>
-    <div id="status">Ready</div>
-  </header>
 
-  <div id="chat">
-    <div class="msg system">
-      <div class="role">System</div>
-      <div class="body">System ready · Nebula 1</div>
+  <!-- ========== AUTH ========== -->
+  <div id="auth-screen">
+    <div class="auth-card">
+      <h1>Nebula 1</h1>
+      <p class="sub" id="auth-sub">Sign in to continue</p>
+      <div class="auth-error" id="auth-error"></div>
+
+      <form id="auth-form">
+        <label for="auth-email">Email</label>
+        <input type="email" id="auth-email" required autocomplete="email" />
+
+        <label for="auth-password">Password</label>
+        <input type="password" id="auth-password" required minlength="6" autocomplete="current-password" />
+
+        <button type="submit" class="btn-primary" id="auth-submit">Sign in</button>
+      </form>
+
+      <div class="auth-toggle">
+        <span id="toggle-text">No account?</span>
+        <a id="toggle-link">Create one</a>
+      </div>
     </div>
   </div>
 
-  <div id="input-bar">
-    <div class="preview" id="preview">
-      <img id="preview-img" alt="preview" />
-      <div class="meta" id="preview-meta"></div>
-      <button class="remove" id="remove-preview" title="Remove">×</button>
-    </div>
+  <!-- ========== CHAT ========== -->
+  <div id="chat-screen">
+    <header>
+      <div class="title">
+        Nebula 1
+        <span class="badge">web</span>
+      </div>
+      <div class="header-right">
+        <span id="status">Ready</span>
+        <span id="user-email"></span>
+        <button id="logout-btn">Log out</button>
+      </div>
+    </header>
 
-    <div class="input-row">
-      <button class="icon-btn" id="cam-btn" title="Photo">📷</button>
-      <input type="file" id="file-input" accept="image/*" capture="environment" />
+    <div id="chat"></div>
 
-      <textarea id="message" rows="1" placeholder="Message Nebula 1..." enterkeyhint="send"></textarea>
+    <div id="input-bar">
+      <div class="preview" id="preview">
+        <img id="preview-img" alt="preview" />
+        <div class="meta" id="preview-meta"></div>
+        <button class="remove" id="remove-preview" title="Remove">×</button>
+      </div>
 
-      <button class="btn" id="reset-btn" title="Reset chat">Reset</button>
-      <button class="btn" id="send-btn">Send</button>
+      <div class="input-row">
+        <button class="icon-btn" id="cam-btn" title="Photo">📷</button>
+        <input type="file" id="file-input" accept="image/*" capture="environment" />
+
+        <textarea id="message" rows="1" placeholder="Message Nebula 1..." enterkeyhint="send"></textarea>
+
+        <button class="btn" id="reset-btn" title="Reset chat">Reset</button>
+        <button class="btn" id="send-btn">Send</button>
+      </div>
     </div>
   </div>
 
   <script>
+    const authScreen = document.getElementById("auth-screen");
+    const chatScreen = document.getElementById("chat-screen");
+    const authForm = document.getElementById("auth-form");
+    const authEmail = document.getElementById("auth-email");
+    const authPassword = document.getElementById("auth-password");
+    const authSubmit = document.getElementById("auth-submit");
+    const authError = document.getElementById("auth-error");
+    const authSub = document.getElementById("auth-sub");
+    const toggleText = document.getElementById("toggle-text");
+    const toggleLink = document.getElementById("toggle-link");
+    const logoutBtn = document.getElementById("logout-btn");
+    const userEmailEl = document.getElementById("user-email");
+
     const chatEl = document.getElementById("chat");
     const msgInput = document.getElementById("message");
     const sendBtn = document.getElementById("send-btn");
@@ -283,7 +445,46 @@
     const previewMeta = document.getElementById("preview-meta");
     const removePreview = document.getElementById("remove-preview");
 
+    let isRegister = false;
     let selectedFile = null;
+
+    function getToken() {
+      return localStorage.getItem("nebula_token");
+    }
+
+    function setToken(token) {
+      localStorage.setItem("nebula_token", token);
+    }
+
+    function clearToken() {
+      localStorage.removeItem("nebula_token");
+      localStorage.removeItem("nebula_email");
+    }
+
+    function authHeaders() {
+      const t = getToken();
+      return t ? { Authorization: "Bearer " + t } : {};
+    }
+
+    function showError(msg) {
+      authError.textContent = msg;
+      authError.style.display = "block";
+    }
+
+    function hideError() {
+      authError.style.display = "none";
+    }
+
+    function showAuth() {
+      authScreen.style.display = "flex";
+      chatScreen.style.display = "none";
+    }
+
+    function showChat(email) {
+      authScreen.style.display = "none";
+      chatScreen.style.display = "flex";
+      userEmailEl.textContent = email || localStorage.getItem("nebula_email") || "";
+    }
 
     function setStatus(text, color) {
       statusEl.textContent = text;
@@ -302,7 +503,6 @@
       div.querySelector(".body").textContent = text;
       chatEl.appendChild(div);
       chatEl.scrollTop = chatEl.scrollHeight;
-      return div;
     }
 
     function showTyping() {
@@ -320,6 +520,94 @@
     function hideTyping() {
       const t = document.getElementById("typing");
       if (t) t.remove();
+    }
+
+    function autoResize() {
+      msgInput.style.height = "auto";
+      msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + "px";
+    }
+
+    function clearPreview() {
+      selectedFile = null;
+      fileInput.value = "";
+      preview.style.display = "none";
+      previewImg.src = "";
+    }
+
+    // Toggle login / register
+    toggleLink.addEventListener("click", () => {
+      isRegister = !isRegister;
+      hideError();
+      if (isRegister) {
+        authSub.textContent = "Create your account";
+        authSubmit.textContent = "Create account";
+        toggleText.textContent = "Already have an account?";
+        toggleLink.textContent = "Sign in";
+        authPassword.autocomplete = "new-password";
+      } else {
+        authSub.textContent = "Sign in to continue";
+        authSubmit.textContent = "Sign in";
+        toggleText.textContent = "No account?";
+        toggleLink.textContent = "Create one";
+        authPassword.autocomplete = "current-password";
+      }
+    });
+
+    authForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      hideError();
+      const email = authEmail.value.trim();
+      const password = authPassword.value;
+      const endpoint = isRegister ? "/register" : "/login";
+
+      authSubmit.disabled = true;
+      try {
+        const form = new FormData();
+        form.append("email", email);
+        form.append("password", password);
+        const res = await fetch(endpoint, { method: "POST", body: form });
+        const data = await res.json();
+        if (data.error) {
+          showError(data.error);
+          return;
+        }
+        setToken(data.token);
+        localStorage.setItem("nebula_email", data.email);
+        showChat(data.email);
+        await loadHistory();
+      } catch (err) {
+        showError("Network error: " + err.message);
+      } finally {
+        authSubmit.disabled = false;
+      }
+    });
+
+    logoutBtn.addEventListener("click", () => {
+      clearToken();
+      chatEl.innerHTML = "";
+      showAuth();
+    });
+
+    async function loadHistory() {
+      chatEl.innerHTML = "";
+      try {
+        const res = await fetch("/history", { headers: authHeaders() });
+        if (res.status === 401) {
+          clearToken();
+          showAuth();
+          return;
+        }
+        const data = await res.json();
+        if (!data.messages || data.messages.length === 0) {
+          addMessage("system", "System ready · Nebula 1");
+          return;
+        }
+        for (const m of data.messages) {
+          addMessage(m.role === "assistant" ? "ai" : "user", m.content);
+        }
+      } catch {
+        addMessage("system", "System ready · Nebula 1");
+      }
     }
 
     async function sendText() {
@@ -341,7 +629,16 @@
       try {
         const form = new FormData();
         form.append("message", text);
-        const res = await fetch("/chat", { method: "POST", body: form });
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: authHeaders(),
+          body: form,
+        });
+        if (res.status === 401) {
+          clearToken();
+          showAuth();
+          return;
+        }
         const data = await res.json();
         hideTyping();
         if (data.error) {
@@ -379,7 +676,16 @@
       sendBtn.disabled = true;
 
       try {
-        const res = await fetch("/upload", { method: "POST", body: form });
+        const res = await fetch("/upload", {
+          method: "POST",
+          headers: authHeaders(),
+          body: form,
+        });
+        if (res.status === 401) {
+          clearToken();
+          showAuth();
+          return;
+        }
         const data = await res.json();
         hideTyping();
         if (data.error) {
@@ -399,7 +705,15 @@
 
     async function resetChat() {
       try {
-        await fetch("/reset", { method: "POST" });
+        const res = await fetch("/reset", {
+          method: "POST",
+          headers: authHeaders(),
+        });
+        if (res.status === 401) {
+          clearToken();
+          showAuth();
+          return;
+        }
         chatEl.innerHTML = "";
         addMessage("system", "System ready · Nebula 1");
         setStatus("Ready", "var(--green)");
@@ -408,21 +722,8 @@
       }
     }
 
-    function autoResize() {
-      msgInput.style.height = "auto";
-      msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + "px";
-    }
-
-    function clearPreview() {
-      selectedFile = null;
-      fileInput.value = "";
-      preview.style.display = "none";
-      previewImg.src = "";
-    }
-
     sendBtn.addEventListener("click", sendText);
     resetBtn.addEventListener("click", resetChat);
-
     msgInput.addEventListener("input", autoResize);
     msgInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -432,7 +733,6 @@
     });
 
     camBtn.addEventListener("click", () => fileInput.click());
-
     fileInput.addEventListener("change", () => {
       const file = fileInput.files[0];
       if (!file) return;
@@ -441,10 +741,25 @@
       previewMeta.textContent = file.name + " · " + Math.round(file.size / 1024) + " KB";
       preview.style.display = "flex";
     });
-
     removePreview.addEventListener("click", clearPreview);
 
-    msgInput.focus();
+    // Boot
+    (async function init() {
+      if (getToken()) {
+        try {
+          const res = await fetch("/me", { headers: authHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            localStorage.setItem("nebula_email", data.email);
+            showChat(data.email);
+            await loadHistory();
+            return;
+          }
+        } catch {}
+        clearToken();
+      }
+      showAuth();
+    })();
   </script>
 </body>
 </html>
