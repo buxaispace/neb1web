@@ -20,7 +20,6 @@
       --green: #34d399;
       --amber: #fbbf24;
       --danger: #f87171;
-      --radius: 14px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
@@ -33,11 +32,10 @@
     }
     body { display: flex; flex-direction: column; max-width: 760px; margin: 0 auto; }
 
-    /* Auth */
     #auth-screen {
       flex: 1; display: flex; align-items: center; justify-content: center;
-      padding: 24px; background:
-        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99,102,241,0.18), transparent);
+      padding: 24px;
+      background: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99,102,241,0.18), transparent);
     }
     .auth-card {
       width: 100%; max-width: 400px;
@@ -58,14 +56,14 @@
     .auth-card input {
       width: 100%; background: var(--elevated); border: 1px solid var(--border);
       border-radius: 10px; color: var(--text); font-size: 0.95rem;
-      padding: 12px 14px; margin-bottom: 14px; outline: none; transition: border 0.15s;
+      padding: 12px 14px; margin-bottom: 14px; outline: none;
     }
     .auth-card input:focus { border-color: var(--accent); }
     .auth-card .optional { font-weight: 400; color: #52525b; }
     .btn-primary {
       width: 100%; background: var(--accent); color: #fff; border: none;
       border-radius: 10px; padding: 13px; font-weight: 600; font-size: 0.95rem;
-      cursor: pointer; margin-top: 6px; transition: background 0.15s;
+      cursor: pointer; margin-top: 6px;
     }
     .btn-primary:hover { background: var(--accent-hover); }
     .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
@@ -78,7 +76,6 @@
     }
     .reg-only { display: none; }
 
-    /* Chat */
     #chat-screen { display: none; flex-direction: column; height: 100%; }
     header {
       background: rgba(18,18,20,0.85); backdrop-filter: blur(12px);
@@ -93,7 +90,14 @@
     }
     .header-right { display: flex; align-items: center; gap: 10px; }
     #status { font-size: 0.75rem; color: var(--green); font-weight: 500; }
-    #user-label { font-size: 0.8rem; color: var(--muted); max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #edit-name-btn {
+      background: transparent; border: none; color: var(--muted);
+      font-size: 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 4px;
+      max-width: 140px; padding: 4px 6px; border-radius: 8px;
+    }
+    #edit-name-btn:hover { color: var(--text); background: var(--elevated); }
+    #edit-name-btn .edit-hint { opacity: 0.5; font-size: 0.7rem; }
+    #user-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #logout-btn {
       background: transparent; border: 1px solid var(--border); color: var(--muted);
       font-size: 0.75rem; padding: 5px 12px; border-radius: 8px; cursor: pointer; font-weight: 500;
@@ -134,7 +138,6 @@
       display: flex; gap: 8px; align-items: flex-end;
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 16px; padding: 8px 10px;
-      transition: border-color 0.15s;
     }
     .input-row:focus-within { border-color: #3f3f46; }
     #message {
@@ -147,7 +150,7 @@
       background: var(--elevated); border: 1px solid var(--border);
       color: var(--muted); font-size: 1.25rem; font-weight: 300;
       cursor: pointer; display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0; line-height: 1; transition: color 0.15s, border-color 0.15s;
+      flex-shrink: 0; line-height: 1;
     }
     .icon-btn:hover { color: var(--text); border-color: var(--muted); }
     #file-input { display: none; }
@@ -210,7 +213,10 @@
       <div class="title">Nebula 1 <span class="badge">web</span></div>
       <div class="header-right">
         <span id="status">Ready</span>
-        <span id="user-label"></span>
+        <button type="button" id="edit-name-btn" title="Change name">
+          <span id="user-label"></span>
+          <span class="edit-hint">✎</span>
+        </button>
         <button id="logout-btn">Log out</button>
       </div>
     </header>
@@ -248,6 +254,7 @@
     const bdayField = document.getElementById("bday-field");
     const logoutBtn = document.getElementById("logout-btn");
     const userLabel = document.getElementById("user-label");
+    const editNameBtn = document.getElementById("edit-name-btn");
     const chatEl = document.getElementById("chat");
     const msgInput = document.getElementById("message");
     const sendBtn = document.getElementById("send-btn");
@@ -374,6 +381,30 @@
       showAuth();
     });
 
+    editNameBtn.addEventListener("click", async () => {
+      const current = localStorage.getItem("nebula_name") || "";
+      const next = prompt("What should Nebula call you?", current);
+      if (next === null) return;
+      const name = next.trim();
+      if (!name) { alert("Name can't be empty"); return; }
+      try {
+        const form = new FormData();
+        form.append("display_name", name);
+        const res = await fetch("/update-profile", {
+          method: "POST",
+          headers: authHeaders(),
+          body: form,
+        });
+        if (res.status === 401) { clearToken(); showAuth(); return; }
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        localStorage.setItem("nebula_name", data.display_name);
+        userLabel.textContent = data.display_name;
+      } catch (err) {
+        alert("Failed to update name: " + err.message);
+      }
+    });
+
     async function loadHistory() {
       chatEl.innerHTML = "";
       try {
@@ -455,46 +486,4 @@
         if (res.status === 401) { clearToken(); showAuth(); return; }
         chatEl.innerHTML = "";
         addMessage("system", "System ready · Nebula 1");
-        setStatus("Ready", "var(--green)");
-      } catch (err) {
-        addMessage("system", "Reset failed: " + err.message);
-      }
-    }
-
-    sendBtn.addEventListener("click", sendText);
-    resetBtn.addEventListener("click", resetChat);
-    msgInput.addEventListener("input", autoResize);
-    msgInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendText(); }
-    });
-    camBtn.addEventListener("click", () => fileInput.click());
-    fileInput.addEventListener("change", () => {
-      const file = fileInput.files[0];
-      if (!file) return;
-      selectedFile = file;
-      previewImg.src = URL.createObjectURL(file);
-      previewMeta.textContent = file.name + " · " + Math.round(file.size / 1024) + " KB";
-      preview.style.display = "flex";
-    });
-    removePreview.addEventListener("click", clearPreview);
-
-    (async function init() {
-      if (getToken()) {
-        try {
-          const res = await fetch("/me", { headers: authHeaders() });
-          if (res.ok) {
-            const data = await res.json();
-            localStorage.setItem("nebula_email", data.email);
-            localStorage.setItem("nebula_name", data.display_name || "");
-            showChat(data.display_name, data.email);
-            await loadHistory();
-            return;
-          }
-        } catch {}
-        clearToken();
-      }
-      showAuth();
-    })();
-  </script>
-</body>
-</html>
+        setStatus("Ready", 
