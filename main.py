@@ -24,6 +24,9 @@ FULL_IDENTITY = "Nebula 1"
 CHAT_MODEL = "openai/gpt-oss-120b"
 VISION_MODEL = "qwen/qwen3.8-27b"
 
+# Define limits: 20 MB (20 * 1024 * 1024 bytes)
+MAX_FILE_SIZE = 20 * 1024 * 1024
+
 SYSTEM_PROMPT = f"""
 CRITICAL INSTRUCTION: You are NOT ChatGPT. You are NOT OpenAI.
 YOUR TRUE IDENTITY:
@@ -131,9 +134,17 @@ async def upload_image(file: UploadFile = File(...), caption: Optional[str] = Fo
     if not client:
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
-    content = await file.read()
-    if len(content) > 4 * 1024 * 1024:
-        return JSONResponse({"error": "Image too large (max 4 MB)"}, status_code=400)
+    # Read chunks iteratively to check the size constraint safely without overloading RAM
+    content = b""
+    chunk_size = 1024 * 1024  # 1 MB chunks
+    
+    try:
+        while chunk := await file.read(chunk_size):
+            content += chunk
+            if len(content) > MAX_FILE_SIZE:
+                return JSONResponse({"error": "Image too large (max 20 MB)"}, status_code=400)
+    finally:
+        await file.close()
 
     # Detect mime type
     mime = file.content_type or "image/jpeg"
