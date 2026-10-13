@@ -95,7 +95,7 @@ class Message(Base):
     __tablename__ = "messages"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    role = Column(String(20), nullable=False)  # user | assistant
+    role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     user = relationship("User", back_populates="messages")
@@ -278,6 +278,24 @@ async def me(user: User = Depends(get_current_user)):
         "email": user.email,
         "display_name": user.display_name,
         "birthday": user.birthday.isoformat() if user.birthday else None,
+        "plan": user.plan,
+    })
+
+
+@app.post("/update-profile")
+async def update_profile(
+    display_name: str = Form(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    name = display_name.strip()
+    if not name or len(name) > 100:
+        return JSONResponse({"error": "Name must be 1–100 characters"}, status_code=400)
+    user.display_name = name
+    db.commit()
+    return JSONResponse({
+        "display_name": user.display_name,
+        "email": user.email,
         "plan": user.plan,
     })
 
