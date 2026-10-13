@@ -186,7 +186,7 @@
       <h1>Nebula 1</h1>
       <p class="sub" id="auth-sub">Sign in to continue</p>
       <div class="auth-error" id="auth-error"></div>
-      <form id="auth-form">
+      <form id="auth-form" onsubmit="return false;">
         <div class="reg-only" id="name-field">
           <label for="auth-name">What should Nebula call you?</label>
           <input type="text" id="auth-name" maxlength="100" placeholder="Your name" autocomplete="nickname" />
@@ -199,7 +199,7 @@
           <label for="auth-birthday">Birthday <span class="optional">(optional)</span></label>
           <input type="date" id="auth-birthday" />
         </div>
-        <button type="submit" class="btn-primary" id="auth-submit">Sign in</button>
+        <button type="button" class="btn-primary" id="auth-submit">Sign in</button>
       </form>
       <div class="auth-toggle">
         <span id="toggle-text">No account?</span>
@@ -217,7 +217,7 @@
           <span id="user-label"></span>
           <span class="edit-hint">✎</span>
         </button>
-        <button id="logout-btn">Log out</button>
+        <button type="button" id="logout-btn">Log out</button>
       </div>
     </header>
     <div id="chat"></div>
@@ -343,15 +343,24 @@
       }
     }
 
-    toggleLink.addEventListener("click", () => setRegisterMode(!isRegister));
+    toggleLink.addEventListener("click", function () { setRegisterMode(!isRegister); });
 
-    authForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
+    async function doAuth() {
       hideError();
       const email = authEmail.value.trim();
       const password = authPassword.value;
+      if (!email || !password) {
+        showError("Email and password required");
+        return;
+      }
+      if (isRegister && !authName.value.trim()) {
+        showError("Please enter a name");
+        return;
+      }
+
       const endpoint = isRegister ? "/register" : "/login";
       authSubmit.disabled = true;
+
       try {
         const form = new FormData();
         form.append("email", email);
@@ -360,11 +369,29 @@
           form.append("display_name", authName.value.trim());
           if (authBirthday.value) form.append("birthday", authBirthday.value);
         }
+
         const res = await fetch(endpoint, { method: "POST", body: form });
-        const data = await res.json();
-        if (data.error) { showError(data.error); return; }
+        const text = await res.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          showError("Server error (not JSON). Check Render logs.");
+          console.error("Raw response:", text.slice(0, 400));
+          return;
+        }
+
+        if (data.error) {
+          showError(data.error);
+          return;
+        }
+        if (!data.token) {
+          showError("Login failed — no token returned");
+          return;
+        }
+
         setToken(data.token);
-        localStorage.setItem("nebula_email", data.email);
+        localStorage.setItem("nebula_email", data.email || "");
         localStorage.setItem("nebula_name", data.display_name || "");
         showChat(data.display_name, data.email);
         await loadHistory();
@@ -373,15 +400,27 @@
       } finally {
         authSubmit.disabled = false;
       }
+    }
+
+    authSubmit.addEventListener("click", function (e) {
+      e.preventDefault();
+      doAuth();
     });
 
-    logoutBtn.addEventListener("click", () => {
+    authForm.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        doAuth();
+      }
+    });
+
+    logoutBtn.addEventListener("click", function () {
       clearToken();
       chatEl.innerHTML = "";
       showAuth();
     });
 
-    editNameBtn.addEventListener("click", async () => {
+    editNameBtn.addEventListener("click", async function () {
       const current = localStorage.getItem("nebula_name") || "";
       const next = prompt("What should Nebula call you?", current);
       if (next === null) return;
@@ -418,7 +457,7 @@
         for (const m of data.messages) {
           addMessage(m.role === "assistant" ? "ai" : "user", m.content);
         }
-      } catch {
+      } catch (e) {
         addMessage("system", "System ready · Nebula 1");
       }
     }
@@ -453,7 +492,7 @@
 
     async function sendImage(caption) {
       if (!selectedFile) return;
-      const label = caption ? `[Image] ${selectedFile.name}\n${caption}` : `[Image] ${selectedFile.name}`;
+      const label = caption ? "[Image] " + selectedFile.name + "\n" + caption : "[Image] " + selectedFile.name;
       addMessage("user", label);
       const form = new FormData();
       form.append("file", selectedFile);
@@ -486,4 +525,46 @@
         if (res.status === 401) { clearToken(); showAuth(); return; }
         chatEl.innerHTML = "";
         addMessage("system", "System ready · Nebula 1");
-        setStatus("Ready", 
+        setStatus("Ready", "var(--green)");
+      } catch (err) {
+        addMessage("system", "Reset failed: " + err.message);
+      }
+    }
+
+    sendBtn.addEventListener("click", sendText);
+    resetBtn.addEventListener("click", resetChat);
+    msgInput.addEventListener("input", autoResize);
+    msgInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendText(); }
+    });
+    camBtn.addEventListener("click", function () { fileInput.click(); });
+    fileInput.addEventListener("change", function () {
+      const file = fileInput.files[0];
+      if (!file) return;
+      selectedFile = file;
+      previewImg.src = URL.createObjectURL(file);
+      previewMeta.textContent = file.name + " · " + Math.round(file.size / 1024) + " KB";
+      preview.style.display = "flex";
+    });
+    removePreview.addEventListener("click", clearPreview);
+
+    (async function init() {
+      if (getToken()) {
+        try {
+          const res = await fetch("/me", { headers: authHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            localStorage.setItem("nebula_email", data.email);
+            localStorage.setItem("nebula_name", data.display_name || "");
+            showChat(data.display_name, data.email);
+            await loadHistory();
+            return;
+          }
+        } catch (e) {}
+        clearToken();
+      }
+      showAuth();
+    })();
+  </script>
+</body>
+</html>
