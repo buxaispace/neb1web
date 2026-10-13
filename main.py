@@ -114,7 +114,7 @@ async def chat(message: str = Form(...)):
             messages=chat_history,
             temperature=0.5,
         )
-        raw = completion.choices.message.content
+        raw = completion.choices[0].message.content
         final = sanitize_response(raw)
         chat_history.append({"role": "assistant", "content": final})
         return JSONResponse({"reply": final})
@@ -182,7 +182,7 @@ async def upload_image(file: UploadFile = File(...), caption: Optional[str] = Fo
             temperature=0.2,
             max_tokens=500,
         )
-        image_description = vision_completion.choices.message.content.strip()
+        image_description = vision_completion.choices[0].message.content.strip()
     except Exception as e:
         return JSONResponse({"error": f"Vision error: {e}"}, status_code=500)
 
@@ -198,7 +198,7 @@ async def upload_image(file: UploadFile = File(...), caption: Optional[str] = Fo
             messages=chat_history,
             temperature=0.5,
         )
-        raw = completion.choices.message.content
+        raw = completion.choices[0].message.content
         final = sanitize_response(raw)
         chat_history.append({"role": "assistant", "content": final})
         return JSONResponse({
