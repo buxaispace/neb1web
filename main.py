@@ -1,7 +1,7 @@
 import os
 import base64
 import io
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from typing import List, Optional
 
 from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException
@@ -13,7 +13,7 @@ from groq import Groq
 from PIL import Image
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Date, ForeignKey
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 
 # ---------------------------------------------------------------------------
@@ -84,6 +84,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
+    display_name = Column(String(100), nullable=False, default="Friend")
+    birthday = Column(Date, nullable=True)
     plan = Column(String(50), default="free")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     messages = relationship("Message", back_populates="user", cascade="all, delete-orphan")
@@ -158,19 +160,42 @@ def sanitize_response(text: str) -> str:
     return cleaned
 
 
-def build_messages_for_user(db: Session, user_id: int) -> List[dict]:
+def user_context_block(user: User) -> str:
+    parts = [
+        f"The user's preferred name is {user.display_name}. "
+        f"Address them as {user.display_name} when it feels natural."
+    ]
+    if user.birthday:
+        parts.append(
+            f"Their birthday is {user.birthday.isoformat()} "
+            "(optional context only; do not bring it up unless relevant)."
+        )
+    return " ".join(parts)
+
+
+def build_messages_for_user(db: Session, user: User) -> List[dict]:
     rows = (
         db.query(Message)
-        .filter(Message.user_id == user_id)
+        .filter(Message.user_id == user.id)
         .order_by(Message.id.desc())
         .limit(40)
         .all()
     )
     rows = list(reversed(rows))
-    history = [{"role": "system", "content": SYSTEM_PROMPT}]
+    system = SYSTEM_PROMPT + "\n\nUSER CONTEXT:\n" + user_context_block(user)
+    history = [{"role": "system", "content": system}]
     for m in rows:
         history.append({"role": m.role, "content": m.content})
     return history
+
+
+def parse_birthday(value: Optional[str]) -> Optional[date]:
+    if not value or not str(value).strip():
+        return None
+    try:
+        return date.fromisoformat(str(value).strip())
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -186,27 +211,46 @@ async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request, "model_name": MODEL_NAME})
 
 
-# ---------- Auth ----------
 @app.post("/register")
 async def register(
     email: str = Form(...),
     password: str = Form(...),
+    display_name: str = Form(...),
+    birthday: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     email = email.strip().lower()
+    name = display_name.strip()
     if not email or "@" not in email:
         return JSONResponse({"error": "Invalid email"}, status_code=400)
     if len(password) < 6:
         return JSONResponse({"error": "Password must be at least 6 characters"}, status_code=400)
+    if not name or len(name) > 100:
+        return JSONResponse({"error": "Please enter a name (what Nebula should call you)"}, status_code=400)
     if db.query(User).filter(User.email == email).first():
         return JSONResponse({"error": "Email already registered"}, status_code=400)
 
-    user = User(email=email, password_hash=hash_password(password), plan="free")
+    bday = parse_birthday(birthday)
+    if birthday and str(birthday).strip() and bday is None:
+        return JSONResponse({"error": "Birthday must be a valid date"}, status_code=400)
+
+    user = User(
+        email=email,
+        password_hash=hash_password(password),
+        display_name=name,
+        birthday=bday,
+        plan="free",
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
     token = create_access_token(user.id)
-    return JSONResponse({"token": token, "email": user.email, "plan": user.plan})
+    return JSONResponse({
+        "token": token,
+        "email": user.email,
+        "display_name": user.display_name,
+        "plan": user.plan,
+    })
 
 
 @app.post("/login")
@@ -220,12 +264,22 @@ async def login(
     if not user or not verify_password(password, user.password_hash):
         return JSONResponse({"error": "Wrong email or password"}, status_code=401)
     token = create_access_token(user.id)
-    return JSONResponse({"token": token, "email": user.email, "plan": user.plan})
+    return JSONResponse({
+        "token": token,
+        "email": user.email,
+        "display_name": user.display_name,
+        "plan": user.plan,
+    })
 
 
 @app.get("/me")
 async def me(user: User = Depends(get_current_user)):
-    return JSONResponse({"email": user.email, "plan": user.plan})
+    return JSONResponse({
+        "email": user.email,
+        "display_name": user.display_name,
+        "birthday": user.birthday.isoformat() if user.birthday else None,
+        "plan": user.plan,
+    })
 
 
 @app.get("/history")
@@ -242,7 +296,6 @@ async def history(user: User = Depends(get_current_user), db: Session = Depends(
     })
 
 
-# ---------- Chat ----------
 @app.post("/chat")
 async def chat(
     message: str = Form(...),
@@ -259,7 +312,7 @@ async def chat(
     db.add(Message(user_id=user.id, role="user", content=user_text))
     db.commit()
 
-    messages = build_messages_for_user(db, user.id)
+    messages = build_messages_for_user(db, user)
 
     try:
         completion = client.chat.completions.create(
@@ -348,7 +401,7 @@ async def upload_image(
     db.add(Message(user_id=user.id, role="user", content=note))
     db.commit()
 
-    messages = build_messages_for_user(db, user.id)
+    messages = build_messages_for_user(db, user)
 
     try:
         completion = client.chat.completions.create(
