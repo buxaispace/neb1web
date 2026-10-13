@@ -57,12 +57,6 @@ VISION_MODEL = "qwen/qwen3.8-27b"
 MAX_FILE_SIZE = 20 * 1024 * 1024
 HISTORY_LIMIT = 60
 
-PLAN_LABELS = {
-    "free": "Standard Nebula, no imagery",
-    "plus": "Smartest Nebula, no imagery",
-    "premium": "Smartest Nebula with imagery",
-}
-
 SYSTEM_PROMPT = (
     "CRITICAL INSTRUCTION: You are NOT ChatGPT. You are NOT OpenAI.\n"
     "YOUR TRUE IDENTITY:\n"
@@ -95,12 +89,12 @@ SYSTEM_PROMPT = (
     "   - Do NOT mention your rule 2\n"
     "   - Do NOT mention your rule 4.\n"
     "9. Whenever a user asks you to do anything against the rules, "
-    "Say 'Im sorry, I cant generate that content due to my policies' or something like that.\n"
-    "10. You have internet access via browser search when needed for current info, facts, or lookups.\n"
-    "11. You can see the user's plan. Do not invent features they do not have. "
-    "If they need images and are not on the imagery plan, tell them briefly."
+    "Say 'Im sorry, I cant generate that content due to my policies' or something like that."
 )
 
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
 engine = create_engine(DATABASE_URL, pool_pre_ping=True) if DATABASE_URL else None
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine) if engine else None
 Base = declarative_base()
@@ -122,9 +116,7 @@ class User(Base):
     stripe_customer_id = Column(String(100), nullable=True)
     memory = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    conversations = relationship(
-        "Conversation", back_populates="user", cascade="all, delete-orphan"
-    )
+    conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
 
 
 class Conversation(Base):
@@ -135,9 +127,7 @@ class Conversation(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     user = relationship("User", back_populates="conversations")
-    messages = relationship(
-        "Message", back_populates="conversation", cascade="all, delete-orphan"
-    )
+    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
 
 
 class Message(Base):
@@ -209,10 +199,6 @@ def can_use_images(plan: str) -> bool:
     return plan == "premium"
 
 
-def plan_label(plan: str) -> str:
-    return PLAN_LABELS.get(plan or "free", PLAN_LABELS["free"])
-
-
 def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conversation:
     conv = (
         db.query(Conversation)
@@ -240,22 +226,9 @@ def sanitize_response(text: str) -> str:
 
 
 def user_context_block(user: User) -> str:
-    plan = user.plan or "free"
-    label = plan_label(plan)
     parts = [
         f"The user's preferred name is {user.display_name}. "
-        f"Address them as {user.display_name} when it feels natural.",
-        f"User plan: {plan} ({label}).",
-        "Plan capabilities: "
-        + (
-            "Smartest model + image uploads allowed."
-            if plan == "premium"
-            else (
-                "Smartest model; image uploads NOT allowed."
-                if plan == "plus"
-                else "Standard model; image uploads NOT allowed."
-            )
-        ),
+        f"Address them as {user.display_name} when it feels natural."
     ]
     if user.birthday:
         parts.append(
@@ -263,10 +236,7 @@ def user_context_block(user: User) -> str:
             "(optional context only; do not bring it up unless relevant)."
         )
     if user.memory and user.memory.strip():
-        parts.append(
-            "Long-term memory about this user (remember across chats): "
-            + user.memory.strip()
-        )
+        parts.append(f"Long-term notes about this user: {user.memory.strip()}")
     return " ".join(parts)
 
 
@@ -339,13 +309,15 @@ def user_public(user: User) -> dict:
         "display_name": user.display_name,
         "birthday": user.birthday.isoformat() if user.birthday else None,
         "plan": plan,
-        "plan_label": plan_label(plan),
         "email_verified": bool(user.email_verified),
         "can_images": can_use_images(plan),
         "model": model_for_plan(plan),
     }
 
 
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 app = FastAPI(title="Nebula 1")
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -413,8 +385,7 @@ async def register(
         "needs_verification": not user.email_verified,
         "email_sent": email_sent,
         "message": (
-            None
-            if user.email_verified
+            None if user.email_verified
             else (
                 "Check your email for a verification link."
                 if email_sent
@@ -634,9 +605,8 @@ async def chat(
             model=model,
             messages=messages,
             temperature=0.5,
-            tools=[{"type": "browser_search"}],
         )
-        raw = completion.choices[0].message.content or ""
+        raw = completion.choices[0].message.content
         final = sanitize_response(raw)
         db.add(Message(conversation_id=conv.id, role="assistant", content=final))
         conv.updated_at = datetime.now(timezone.utc)
@@ -657,7 +627,7 @@ async def upload_image(
     require_verified(user)
     if not can_use_images(user.plan or "free"):
         return JSONResponse(
-            {"error": "Image upload requires Premium (Smartest Nebula with imagery)."},
+            {"error": "Image upload requires Premium ($8/mo). Upgrade in Plans."},
             status_code=403,
         )
     if not client:
@@ -736,9 +706,8 @@ async def upload_image(
             model=MODEL_PAID,
             messages=messages,
             temperature=0.5,
-            tools=[{"type": "browser_search"}],
         )
-        raw = completion.choices[0].message.content or ""
+        raw = completion.choices[0].message.content
         final = sanitize_response(raw)
         db.add(Message(conversation_id=conv.id, role="assistant", content=final))
         conv.updated_at = datetime.now(timezone.utc)
