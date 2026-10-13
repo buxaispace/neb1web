@@ -88,17 +88,28 @@ class User(Base):
     birthday = Column(Date, nullable=True)
     plan = Column(String(50), default="free")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    messages = relationship("Message", back_populates="user", cascade="all, delete-orphan")
+    conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String(200), nullable=False, default="New chat")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    user = relationship("User", back_populates="conversations")
+    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
 
 
 class Message(Base):
     __tablename__ = "messages"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, index=True)
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    user = relationship("User", back_populates="messages")
+    conversation = relationship("Conversation", back_populates="messages")
 
 
 if engine:
@@ -145,6 +156,17 @@ def get_current_user(
     return user
 
 
+def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conversation:
+    conv = (
+        db.query(Conversation)
+        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
+        .first()
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return conv
+
+
 def sanitize_response(text: str) -> str:
     forbidden = [
         "large language model trained by",
@@ -173,10 +195,10 @@ def user_context_block(user: User) -> str:
     return " ".join(parts)
 
 
-def build_messages_for_user(db: Session, user: User) -> List[dict]:
+def build_messages_for_conversation(db: Session, user: User, conversation_id: int) -> List[dict]:
     rows = (
         db.query(Message)
-        .filter(Message.user_id == user.id)
+        .filter(Message.conversation_id == conversation_id)
         .order_by(Message.id.desc())
         .limit(40)
         .all()
@@ -196,6 +218,13 @@ def parse_birthday(value: Optional[str]) -> Optional[date]:
         return date.fromisoformat(str(value).strip())
     except ValueError:
         return None
+
+
+def make_title_from_text(text: str) -> str:
+    t = (text or "").strip().replace("\n", " ")
+    if not t:
+        return "New chat"
+    return (t[:48] + "…") if len(t) > 48 else t
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +273,19 @@ async def register(
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    conv = Conversation(user_id=user.id, title="New chat")
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+
     token = create_access_token(user.id)
     return JSONResponse({
         "token": token,
         "email": user.email,
         "display_name": user.display_name,
         "plan": user.plan,
+        "conversation_id": conv.id,
     })
 
 
@@ -263,12 +299,26 @@ async def login(
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.password_hash):
         return JSONResponse({"error": "Wrong email or password"}, status_code=401)
+
+    conv = (
+        db.query(Conversation)
+        .filter(Conversation.user_id == user.id)
+        .order_by(Conversation.updated_at.desc())
+        .first()
+    )
+    if not conv:
+        conv = Conversation(user_id=user.id, title="New chat")
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+
     token = create_access_token(user.id)
     return JSONResponse({
         "token": token,
         "email": user.email,
         "display_name": user.display_name,
         "plan": user.plan,
+        "conversation_id": conv.id,
     })
 
 
@@ -300,11 +350,70 @@ async def update_profile(
     })
 
 
+@app.get("/conversations")
+async def list_conversations(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rows = (
+        db.query(Conversation)
+        .filter(Conversation.user_id == user.id)
+        .order_by(Conversation.updated_at.desc())
+        .all()
+    )
+    return JSONResponse({
+        "conversations": [
+            {
+                "id": c.id,
+                "title": c.title,
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+            }
+            for c in rows
+        ]
+    })
+
+
+@app.post("/conversations")
+async def create_conversation(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    conv = Conversation(user_id=user.id, title="New chat")
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return JSONResponse({"id": conv.id, "title": conv.title})
+
+
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    conv = get_user_conversation(db, user, conversation_id)
+    db.delete(conv)
+    db.commit()
+
+    remaining = (
+        db.query(Conversation)
+        .filter(Conversation.user_id == user.id)
+        .order_by(Conversation.updated_at.desc())
+        .first()
+    )
+    if not remaining:
+        remaining = Conversation(user_id=user.id, title="New chat")
+        db.add(remaining)
+        db.commit()
+        db.refresh(remaining)
+
+    return JSONResponse({"status": "ok", "conversation_id": remaining.id})
+
+
 @app.get("/history")
-async def history(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def history(
+    conversation_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    get_user_conversation(db, user, conversation_id)
     rows = (
         db.query(Message)
-        .filter(Message.user_id == user.id)
+        .filter(Message.conversation_id == conversation_id)
         .order_by(Message.id.asc())
         .limit(100)
         .all()
@@ -317,20 +426,28 @@ async def history(user: User = Depends(get_current_user), db: Session = Depends(
 @app.post("/chat")
 async def chat(
     message: str = Form(...),
+    conversation_id: int = Form(...),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if not client:
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
+    conv = get_user_conversation(db, user, conversation_id)
     user_text = message.strip()
     if not user_text:
         return JSONResponse({"error": "Empty message"}, status_code=400)
 
-    db.add(Message(user_id=user.id, role="user", content=user_text))
+    # Auto-title from first user message
+    msg_count = db.query(Message).filter(Message.conversation_id == conv.id).count()
+    if msg_count == 0 and conv.title == "New chat":
+        conv.title = make_title_from_text(user_text)
+
+    db.add(Message(conversation_id=conv.id, role="user", content=user_text))
+    conv.updated_at = datetime.now(timezone.utc)
     db.commit()
 
-    messages = build_messages_for_user(db, user)
+    messages = build_messages_for_conversation(db, user, conv.id)
 
     try:
         completion = client.chat.completions.create(
@@ -340,9 +457,10 @@ async def chat(
         )
         raw = completion.choices[0].message.content
         final = sanitize_response(raw)
-        db.add(Message(user_id=user.id, role="assistant", content=final))
+        db.add(Message(conversation_id=conv.id, role="assistant", content=final))
+        conv.updated_at = datetime.now(timezone.utc)
         db.commit()
-        return JSONResponse({"reply": final})
+        return JSONResponse({"reply": final, "title": conv.title})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -350,6 +468,7 @@ async def chat(
 @app.post("/upload")
 async def upload_image(
     file: UploadFile = File(...),
+    conversation_id: int = Form(...),
     caption: Optional[str] = Form(None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -357,9 +476,10 @@ async def upload_image(
     if not client:
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
+    conv = get_user_conversation(db, user, conversation_id)
+
     content = b""
     chunk_size = 1024 * 1024
-
     try:
         while chunk := await file.read(chunk_size):
             content += chunk
@@ -398,10 +518,7 @@ async def upload_image(
                                 "Be factual and thorough but concise."
                             ),
                         },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        },
+                        {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
             ],
@@ -416,10 +533,15 @@ async def upload_image(
     if caption and caption.strip():
         note += f"\nUser said: {caption.strip()}"
 
-    db.add(Message(user_id=user.id, role="user", content=note))
+    msg_count = db.query(Message).filter(Message.conversation_id == conv.id).count()
+    if msg_count == 0 and conv.title == "New chat":
+        conv.title = make_title_from_text(caption or "Image chat")
+
+    db.add(Message(conversation_id=conv.id, role="user", content=note))
+    conv.updated_at = datetime.now(timezone.utc)
     db.commit()
 
-    messages = build_messages_for_user(db, user)
+    messages = build_messages_for_conversation(db, user, conv.id)
 
     try:
         completion = client.chat.completions.create(
@@ -429,19 +551,28 @@ async def upload_image(
         )
         raw = completion.choices[0].message.content
         final = sanitize_response(raw)
-        db.add(Message(user_id=user.id, role="assistant", content=final))
+        db.add(Message(conversation_id=conv.id, role="assistant", content=final))
+        conv.updated_at = datetime.now(timezone.utc)
         db.commit()
         return JSONResponse({
             "reply": final,
             "filename": file.filename,
             "size": len(content),
+            "title": conv.title,
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.post("/reset")
-async def reset(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    db.query(Message).filter(Message.user_id == user.id).delete()
+async def reset(
+    conversation_id: int = Form(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    conv = get_user_conversation(db, user, conversation_id)
+    db.query(Message).filter(Message.conversation_id == conv.id).delete()
+    conv.title = "New chat"
+    conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     return JSONResponse({"status": "ok"})
