@@ -4,13 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Site Down</title>
+    <!-- Import Grok-style fonts from Google Fonts -->
+    <link rel="preconnect" href="https://googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+    
     <style>
         body {
             margin: 0;
             padding: 0;
             background-color: #000000;
             color: #ffffff;
-            font-family: Arial, sans-serif;
+            /* Prioritizes Grok's interface monospace font with a modern sans-serif fallback */
+            font-family: 'IBM Plex Mono', 'Inter', system-ui, -apple-system, sans-serif;
             display: flex;
             justify-content: center;
             align-items: center;
@@ -18,8 +24,9 @@
             text-align: center;
         }
         h1 {
-            font-size: 2.5rem;
-            font-weight: normal;
+            font-size: 2.2rem;
+            font-weight: 400;
+            letter-spacing: -0.03em;
         }
     </style>
 </head>
