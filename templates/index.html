@@ -24,6 +24,7 @@
       --accent-text: #050507;
       --indigo: #818cf8;
       --green: #34d399;
+      --cashapp: #00d632;
       --amber: #fbbf24;
       --danger: #f87171;
     }
@@ -66,7 +67,6 @@
     body.layout-compact .msg { margin-bottom: 16px; }
     body.layout-compact #chat { padding: 16px 12px; }
 
-    /* Helper if a PNG with black background is ever used */
     .logo-transparent {
       mix-blend-mode: screen;
       background: transparent !important;
@@ -431,10 +431,7 @@
     }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-    /* User Message Bubble (Right-aligned modern pill) */
-    .msg.user {
-      align-items: flex-end;
-    }
+    .msg.user { align-items: flex-end; }
     .msg.user .role {
       font-size: 0.72rem;
       font-weight: 600;
@@ -454,10 +451,7 @@
       word-break: break-word;
     }
 
-    /* AI Message (Grok / ChatGPT Clean Left Stream with Galaxy Avatar) */
-    .msg.ai {
-      align-items: flex-start;
-    }
+    .msg.ai { align-items: flex-start; }
     .msg.ai .role {
       font-size: 0.78rem;
       font-weight: 600;
@@ -499,7 +493,6 @@
     }
     .msg .sep { display: none; }
 
-    /* Interactive Clickable Links & Formatting */
     .chat-link {
       color: var(--indigo);
       text-decoration: underline;
@@ -632,7 +625,7 @@
     #sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(4px); z-index: 20; }
 
     /* -----------------------------------------------------------
-       PLANS MODAL
+       PLANS MODAL & CASH APP AUTO-CHECKOUT
     ----------------------------------------------------------- */
     #plans-modal {
       display: none;
@@ -683,6 +676,83 @@
       color: var(--accent-text);
     }
     .plan-box button:disabled { background: #27272a; color: var(--muted); cursor: default; }
+
+    /* Cash App Checkout Step Box */
+    #cashapp-checkout-box {
+      display: none;
+      margin-top: 18px;
+      padding: 20px;
+      border-radius: 18px;
+      background: rgba(0, 214, 50, 0.06);
+      border: 1px solid rgba(0, 214, 50, 0.35);
+      text-align: center;
+    }
+    #cashapp-checkout-box h3 {
+      color: var(--cashapp);
+      font-size: 1.1rem;
+      margin-bottom: 6px;
+    }
+    #cashapp-checkout-box p {
+      font-size: 0.85rem;
+      color: #d4d4d8;
+      margin-bottom: 12px;
+      line-height: 1.5;
+    }
+    .code-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border: 1px dashed rgba(0, 214, 50, 0.6);
+      color: #fff;
+      font-family: monospace;
+      font-size: 1.05rem;
+      font-weight: 700;
+      padding: 8px 16px;
+      border-radius: 10px;
+      margin: 6px 0 14px;
+      cursor: pointer;
+    }
+    .cashapp-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-top: 8px;
+    }
+    .btn-cashapp {
+      background: var(--cashapp);
+      color: #000;
+      font-weight: 700;
+      font-size: 0.9rem;
+      padding: 11px 20px;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-cashapp:hover { opacity: 0.92; }
+    .btn-verify-now {
+      background: var(--elevated);
+      color: var(--text);
+      border: 1px solid var(--border-strong);
+      font-weight: 600;
+      font-size: 0.85rem;
+      padding: 11px 18px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .btn-verify-now:hover { background: var(--elevated-hover); }
+    #cashapp-status-msg {
+      margin-top: 12px;
+      font-size: 0.8rem;
+      color: var(--amber);
+      font-weight: 500;
+    }
+
     .plans-close {
       margin-top: 18px;
       width: 100%;
@@ -712,7 +782,6 @@
   <div id="auth-screen">
     <div class="auth-card">
       <div class="auth-logo">
-        <!-- Transparent Galaxy Vortex SVG Logo -->
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
           <g transform="translate(100,100) rotate(-28)" fill="#ffffff">
             <path d="M0,-24 C5,-7 7,-5 24,0 C7,5 5,7 0,24 C-5,7 -7,5 -24,0 C-7,-5 -5,-7 0,-24 Z"/>
@@ -821,7 +890,7 @@
   <div id="plans-modal">
     <div class="plans-card">
       <h2>Upgrade Your Plan</h2>
-      <p class="sub">Unlock larger reasoning models and multimodal vision.</p>
+      <p class="sub">Instant automated upgrades via Cash App.</p>
       <div class="plans-grid">
         <div class="plan-box">
           <div>
@@ -860,6 +929,26 @@
           <button type="button" id="btn-premium">Upgrade to Premium</button>
         </div>
       </div>
+
+      <!-- Automated Cash App Checkout Box -->
+      <div id="cashapp-checkout-box">
+        <h3 id="cashapp-title">Send $4 on Cash App</h3>
+        <p>
+          Your payment note is <strong>pre-loaded in the link</strong> and <strong>auto-copied to your clipboard</strong>.<br/>
+          Keep this code in the Cash App <strong>"For"</strong> note so your account upgrades automatically:
+        </p>
+        <div class="code-pill" id="cashapp-code-pill" title="Click to copy code">DAED-0000 📋</div>
+        <div class="cashapp-actions">
+          <a href="#" target="_blank" rel="noopener noreferrer" class="btn-cashapp" id="cashapp-pay-link">
+            Open Cash App & Pay ↗
+          </a>
+          <button type="button" class="btn-verify-now" id="cashapp-verify-btn">
+            I Sent It — Verify Now
+          </button>
+        </div>
+        <div id="cashapp-status-msg">Auto-checking for your Cash App payment receipt...</div>
+      </div>
+
       <button type="button" class="plans-close" id="plans-close">Close</button>
     </div>
   </div>
@@ -900,17 +989,14 @@
     function formatLinksAndMarkdown(text) {
       let escaped = escapeHtml(text);
 
-      // Convert Markdown Links: [Title](URL) -> Clickable <a> tag
       escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+|\/[^\s\)]+)\)/g, function(match, title, url) {
         return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + title + ' ↗</a>';
       });
 
-      // Convert remaining bare URLs
       escaped = escaped.replace(/(^|[\s\n(])(https?:\/\/[^\s<)]+)/g, function(match, prefix, url) {
         return prefix + '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + url + ' ↗</a>';
       });
 
-      // Convert **bold** to <strong>
       escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
       return escaped;
@@ -962,6 +1048,14 @@
     const btnPremium = document.getElementById("btn-premium");
     const btnFree = document.getElementById("btn-free");
 
+    // Cash App Checkout Elements
+    const cashappBox = document.getElementById("cashapp-checkout-box");
+    const cashappTitle = document.getElementById("cashapp-title");
+    const cashappCodePill = document.getElementById("cashapp-code-pill");
+    const cashappPayLink = document.getElementById("cashapp-pay-link");
+    const cashappVerifyBtn = document.getElementById("cashapp-verify-btn");
+    const cashappStatusMsg = document.getElementById("cashapp-status-msg");
+
     // Model Switcher Elements
     const tab20b = document.getElementById("tab-20b");
     const tab120b = document.getElementById("tab-120b");
@@ -973,6 +1067,8 @@
     let emailVerified = true;
     let canImages = false;
     let selectedModel = localStorage.getItem("daedalus_selected_model") || "gpt-oss-20b";
+    let currentPaymentCode = "";
+    let cashappPollTimer = null;
 
     function getToken() { return localStorage.getItem("nebula_token"); }
     function setToken(t) { localStorage.setItem("nebula_token", t); }
@@ -997,6 +1093,13 @@
     function setStatus(text, color) {
       statusEl.textContent = text;
       statusEl.style.color = color || "var(--green)";
+    }
+
+    function stopCashappPolling() {
+      if (cashappPollTimer) {
+        clearInterval(cashappPollTimer);
+        cashappPollTimer = null;
+      }
     }
 
     function applyPlanUI() {
@@ -1109,7 +1212,11 @@
     sidebarOverlay.addEventListener("click", closeSidebar);
     plansBtn.addEventListener("click", function () { plansModal.classList.add("open"); });
     planBadge.addEventListener("click", function () { plansModal.classList.add("open"); });
-    plansClose.addEventListener("click", function () { plansModal.classList.remove("open"); });
+    plansClose.addEventListener("click", function () {
+      plansModal.classList.remove("open");
+      cashappBox.style.display = "none";
+      stopCashappPolling();
+    });
 
     async function doAuth() {
       hideError();
@@ -1160,6 +1267,7 @@
     });
 
     logoutBtn.addEventListener("click", function () {
+      stopCashappPolling();
       clearToken(); currentConvId = null; chatEl.innerHTML = ""; convList.innerHTML = ""; showAuth();
     });
 
@@ -1191,6 +1299,59 @@
       userLabel.textContent = data.display_name;
     });
 
+    // -------------------------------------------------------------
+    // Automated Cash App Checkout & Verification
+    // -------------------------------------------------------------
+    async function copyPaymentCode() {
+      if (!currentPaymentCode) return;
+      try {
+        await navigator.clipboard.writeText(currentPaymentCode);
+        cashappCodePill.textContent = currentPaymentCode + " ✓ Copied!";
+        setTimeout(() => {
+          cashappCodePill.textContent = currentPaymentCode + " 📋";
+        }, 2000);
+      } catch (e) {}
+    }
+
+    cashappCodePill.addEventListener("click", copyPaymentCode);
+    cashappPayLink.addEventListener("click", copyPaymentCode);
+
+    async function checkCashappVerification(manualClick) {
+      if (manualClick) {
+        cashappStatusMsg.textContent = "Checking for your Cash App payment receipt...";
+        cashappStatusMsg.style.color = "var(--amber)";
+        cashappVerifyBtn.disabled = true;
+      }
+      try {
+        const res = await fetch("/verify-cashapp", { method: "POST", headers: authHeaders() });
+        const data = await res.json();
+        if (data.verified && data.plan) {
+          stopCashappPolling();
+          userPlan = data.plan;
+          selectedModel = "gpt-oss-120b";
+          localStorage.setItem("daedalus_selected_model", selectedModel);
+          applyPlanUI();
+          cashappStatusMsg.textContent = data.message || "Payment verified!";
+          cashappStatusMsg.style.color = "var(--green)";
+          setTimeout(() => {
+            plansModal.classList.remove("open");
+            cashappBox.style.display = "none";
+            addMessage("system", data.message || ("Upgraded to " + userPlan.toUpperCase() + "!"));
+          }, 1200);
+        } else if (manualClick) {
+          cashappStatusMsg.textContent = data.error || data.message || "Receipt not detected yet. Retrying automatically...";
+        }
+      } catch (e) {
+        if (manualClick) cashappStatusMsg.textContent = "Check error: " + e.message;
+      } finally {
+        if (manualClick) cashappVerifyBtn.disabled = false;
+      }
+    }
+
+    cashappVerifyBtn.addEventListener("click", function () {
+      checkCashappVerification(true);
+    });
+
     async function startCheckout(plan) {
       try {
         const form = new FormData();
@@ -1198,7 +1359,24 @@
         const res = await fetch("/create-checkout", { method: "POST", headers: authHeaders(), body: form });
         const data = await res.json();
         if (data.error) { alert(data.error); return; }
-        if (data.url) window.location.href = data.url;
+
+        currentPaymentCode = data.code || "";
+        cashappTitle.textContent = "Send $" + data.amount + " to " + data.cashtag + " (" + plan.toUpperCase() + ")";
+        cashappCodePill.textContent = currentPaymentCode + " 📋";
+        cashappPayLink.href = data.cashapp_url || "#";
+        cashappPayLink.textContent = "Pay $" + data.amount + " on Cash App ↗";
+        cashappStatusMsg.textContent = "Note auto-copied! Waiting for your Cash App payment...";
+        cashappStatusMsg.style.color = "var(--amber)";
+        cashappBox.style.display = "block";
+
+        // Auto-copy code to customer's clipboard immediately
+        copyPaymentCode();
+
+        // Start polling every 6 seconds while modal is open
+        stopCashappPolling();
+        cashappPollTimer = setInterval(function () {
+          checkCashappVerification(false);
+        }, 6000);
       } catch (e) { alert(e.message); }
     }
     btnPlus.addEventListener("click", function () { startCheckout("plus"); });
