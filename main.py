@@ -139,24 +139,23 @@ SYSTEM_PROMPT = (
 )
 
 CODING_EXPERT_DIRECTIVE = (
-    "PRINCIPAL SOFTWARE ENGINEER & CLAUDE ARTIFACTS / VERCEL v0 UI DESIGNER MODE ACTIVE:\n"
-    "1. PRODUCT THINKING & FEATURE DEPTH (DO NOT BUILD BAREBONES SKELETONS):\n"
-    "   - Never build the bare minimum. Think like a Principal Product Designer at Linear, Vercel, or Raycast.\n"
-    "   - Add rich, applicable interactive features that make the app genuinely useful in the real world:\n"
-    "     • Clickable segmented mode tabs / navigation pills so users can switch modes or views directly.\n"
-    "     • Clean Settings Modals or collapsible drawers (tuck configuration inputs inside a sleek modal/drawer triggered by a gear icon button instead of dumping raw number inputs onto the main screen).\n"
-    "     • Live Stats & Analytics summary cards (e.g., completed sessions, focus time today, streak counters, completion progress bars).\n"
-    "     • Rich list management: filter tabs (All / Active / Completed), priority badges (High / Med / Low), keyboard shortcuts (Enter to submit, Space to toggle), and empty-state illustrations.\n"
-    "2. OPUS-GRADE FRONTEND STACK (MANDATORY FOR ALL HTML/CSS/JS WEB APPS):\n"
-    "   - ALWAYS load Tailwind CSS CDN (`<script src=\"https://cdn.tailwindcss.com\"></script>`), Lucide Icons (`<script src=\"https://unpkg.com/lucide@latest\"></script>`), and Google Fonts (`Inter` and `JetBrains Mono`) in the `<head>`.\n"
-    "   - Call `if (window.lucide) lucide.createIcons();` after rendering DOM updates so vector icons render crisply.\n"
-    "   - Style EVERY `<button>`, `<input>`, `<select>`, and badge with Tailwind utility classes so there is NEVER an unstyled default browser button.\n"
-    "   - Hide ugly default number input spinner arrows (`input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }`).\n"
-    "   - Use an obsidian background (`bg-[#07070b] text-zinc-100 min-h-screen relative overflow-x-hidden`) with ambient glowing background orbs (`fixed -z-10 w-[28rem] h-[28rem] bg-indigo-600/20 rounded-full blur-[130px]` and `bg-violet-500/15 blur-[130px]`), and true glassmorphic cards (`bg-zinc-900/65 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl`).\n"
-    "   - For timers/metrics: Build a large animated SVG circular progress ring (`<svg>` with `<circle>` using `stroke-dasharray`, `stroke-dashoffset`, and `stroke-linecap=\"round\"` with a smooth `transition-all duration-700`) surrounding a `font-mono tabular-nums` readout.\n"
-    "3. CODE COMPLETENESS & FENCING:\n"
-    "   - Write 100% complete, directly runnable code with ZERO placeholders (`// TODO` or `// rest of code` are strictly forbidden).\n"
-    "   - CRITICAL: Wrap all code inside triple-backtick markdown fences with the language identifier (` ```html ... ``` ` or ` ```python ... ``` `)."
+    "PRINCIPAL SOFTWARE ENGINEER & CLAUDE OPUS / VERCEL v0 UI ARCHITECT MODE ACTIVE:\n"
+    "When building HTML/CSS/JS web apps or interfaces, you MUST apply all 4 of these flagship product patterns:\n"
+    "1. 12-COLUMN BENTO-GRID DASHBOARD LAYOUT (NEVER A NARROW SINGLE COLUMN):\n"
+    "   - Use a wide responsive container (`max-w-6xl w-full mx-auto p-4 sm:p-8`) with a top glassmorphic navigation header (app logo/title, live status pill, quick stats, and a Settings Gear button) and a 2-column Bento Grid (`grid grid-cols-1 lg:grid-cols-12 gap-6`).\n"
+    "   - Left Column (`lg:col-span-5`): Hero interactive widget (e.g. large animated SVG circular progress ring `<svg>` with glowing `drop-shadow` and `stroke-dashoffset` transitions, clickable segmented mode pills, primary gradient controls, `<kbd>` keyboard shortcut hints, and a 3-card mini analytics row showing Completed, Focus Mins, and Streak).\n"
+    "   - Right Column (`lg:col-span-7`): Full interactive workspace (e.g. task completion progress bar, filter tabs `All | Active | Done`, priority selector `High | Med | Low`, inline input + gradient Add button row, and rich item cards with priority badges and hover actions).\n"
+    "2. PRE-POPULATED REALISTIC DEMO DATA ON FIRST BOOT:\n"
+    "   - Never show a blank/empty list on first load! If `localStorage` is empty on first boot, automatically seed 3–4 realistic sample items (with varied High/Med/Low priority badges and 1 already marked completed) so the app looks alive and immediately testable.\n"
+    "3. FLOATING TOAST NOTIFICATIONS & KEYBOARD SHORTCUTS:\n"
+    "   - Build a sleek floating Toast Notification system in the bottom-right corner (`fixed bottom-5 right-5 z-50`) that slides in when actions occur (e.g. 'Settings saved', 'Session started', 'Task added').\n"
+    "   - Include working keyboard shortcuts (e.g. `Space` to start/pause when not typing in an input, `R` to reset, `Enter` to add) and display subtle `<kbd class=\"px-1.5 py-0.5 text-xs bg-white/10 rounded border border-white/15\">Space</kbd>` hints.\n"
+    "4. SETTINGS TUCKED IN A SLEEK MODAL (NO RAW INPUT CLUTTER ON MAIN SCREEN):\n"
+    "   - Never dump raw configuration/interval number inputs on the main screen. Put a Settings button (`<i data-lucide=\"settings\"></i>`) in the top header that opens a backdrop-blurred modal popup (`fixed inset-0 bg-black/70 backdrop-blur-md z-50`) to edit intervals, volume, or preferences.\n"
+    "5. MANDATORY TECH STACK & CODE FENCING:\n"
+    "   - Load Tailwind CSS CDN (`<script src=\"https://cdn.tailwindcss.com\"></script>`), Lucide Icons (`<script src=\"https://unpkg.com/lucide@latest\"></script>`), and Google Fonts (`Inter` and `JetBrains Mono`).\n"
+    "   - Call `if (window.lucide) lucide.createIcons();` after any DOM render.\n"
+    "   - Write 100% complete, runnable code with ZERO placeholders (`// TODO` is forbidden), wrapped inside a single ```html ... ``` (or ```python ... ```) markdown code block."
 )
 
 # ---------------------------------------------------------------------------
@@ -185,7 +184,6 @@ def call_llm_with_failover(
         except Exception as e:
             last_err = e
             err_str = str(e).lower()
-            # If rate limited (429) or quota exceeded, try the next key
             if "429" in err_str or "rate_limit" in err_str or "quota" in err_str or "tokens per" in err_str:
                 print(f"Groq key #{idx + 1} hit rate limit, failing over...")
                 continue
@@ -668,30 +666,32 @@ def is_coding_or_logic_query(text: str) -> bool:
 def generate_product_ux_blueprint(user_text: str) -> Optional[str]:
     """
     Stage 1 of the Flipped Pipeline:
-    Expands a brief coding/UI prompt into a comprehensive Claude-Artifacts-level Product & UX
-    Specification before the Master Builder writes the code.
+    Uses Reasoning: low + max_tokens=2048 so internal thinking tokens never truncate the blueprint.
+    Expands a brief coding/UI prompt into a comprehensive Claude-Opus-level Product & UX Specification.
     """
     try:
         spec_prompt = [
             {
                 "role": "system",
                 "content": (
+                    "Reasoning: low\n"
                     "You are a Principal Product Manager & Staff UI/UX Architect at Linear/Vercel.\n"
                     "The user is asking for a software application or UI.\n"
-                    "Output a concise, high-density Product & Interactive UX Blueprint (under 220 words) that expands their request into a 10/10 real-world application:\n"
-                    "1. INTERACTIVE ARCHITECTURE: Specify clickable segmented mode/view tabs, keyboard shortcuts, and a clean Settings Modal or collapsible drawer (so raw config inputs are tucked inside a modal instead of cluttering the main view).\n"
-                    "2. RICH APPLICABLE FEATURES: Specify live stats/analytics summary cards (streaks, totals, completion progress bar), category/priority badges, filter pills (All/Active/Done), toast feedback notifications, and localStorage state recovery.\n"
-                    "3. VISUAL COMPONENTS: Specify Tailwind CSS classes, Lucide vector icons (`data-lucide`), an animated SVG circular progress ring or visual chart if applicable, and ambient glowing background blobs behind glassmorphic cards.\n"
+                    "Output a concise, high-density Product & Interactive UX Blueprint (under 250 words) that expands their request into a 10/10 real-world application incorporating these 4 mandatory pillars:\n"
+                    "1. 12-COLUMN BENTO-GRID LAYOUT: Specify a top glassmorphic nav bar (with app branding, status badge, and Settings Gear button) + a 2-column Bento Grid (`lg:grid-cols-12 gap-6`) where the hero widget & 3 mini analytics cards sit on the left (`lg:col-span-5`) and the interactive workspace sits on the right (`lg:col-span-7`).\n"
+                    "2. PRE-POPULATED DEMO DATA: Specify 3–4 realistic default sample items (with High/Med/Low priority badges and 1 completed item) that load automatically when `localStorage` is empty.\n"
+                    "3. TOAST NOTIFICATIONS & KEYBOARD SHORTCUTS: Specify a bottom-right floating toast notification (`showToast()`) and keyboard shortcuts (`Space`, `R`, `Enter`) with `<kbd>` visual hints.\n"
+                    "4. SETTINGS MODAL & SVG VISUALS: Specify a backdrop-blurred Settings Modal triggered by the top-right gear icon (no raw config inputs cluttering the main page) and an animated SVG circular progress ring.\n"
                     "Output ONLY the blueprint bullet points—no code yet."
                 )
             },
             {"role": "user", "content": user_text}
         ]
         blueprint = call_llm_with_failover(
-            model=MODEL_FREE,
+            model=MODEL_PAID,
             messages=spec_prompt,
             temperature=0.2,
-            max_tokens=350,
+            max_tokens=2048,
         )
         return strip_thinking_and_tool_tags(blueprint)
     except Exception as e:
@@ -718,6 +718,7 @@ def maybe_update_user_memory(db: Session, user: User, user_text: str):
                 {
                     "role": "system",
                     "content": (
+                        "Reasoning: low\n"
                         "Extract 1 brief, factual note about the user's preferences, tech stack, or projects "
                         "from their message to append to their long-term memory. Output ONLY the short note (max 20 words)."
                     )
@@ -725,7 +726,7 @@ def maybe_update_user_memory(db: Session, user: User, user_text: str):
                 {"role": "user", "content": user_text}
             ],
             temperature=0.1,
-            max_tokens=40,
+            max_tokens=256,
         ).strip()
         if new_note and new_note not in current_mem:
             updated = (current_mem + " | " + new_note).strip(" |")
@@ -1031,6 +1032,7 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
                 {
                     "role": "system",
                     "content": (
+                        "Reasoning: low\n"
                         "You are an expert search query formulation engine. Given the user dialogue, output 2 specific 3-to-5-word "
                         "search queries that will locate the exact content creator discussion, technical docs, or news story being asked about. "
                         "Output each query on a new line with no quotes or numbers."
@@ -1042,7 +1044,7 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
                 model=MODEL_FREE,
                 messages=exp_prompt,
                 temperature=0.1,
-                max_tokens=40,
+                max_tokens=256,
             )
             for line in raw_exp.splitlines():
                 clean_line = line.strip().strip('"').strip("'")
@@ -1533,7 +1535,7 @@ async def chat(
             db.commit()
             return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
 
-        # Stage 1 for Plus & Premium Coding: Generate Claude-Artifacts Product & UX Blueprint
+        # Stage 1 for Plus & Premium Coding: Generate Claude-Opus Product & UX Blueprint
         if coding_mode:
             blueprint_section = ""
             if user_plan in ("plus", "premium"):
@@ -1541,7 +1543,7 @@ async def chat(
                 if ux_blueprint:
                     blueprint_section = (
                         f"\n\nMANDATORY PRODUCT & UX ARCHITECTURE BLUEPRINT TO IMPLEMENT:\n{ux_blueprint}\n"
-                        "Implement EVERY feature, tab, modal, stat card, and visual polish detail in this blueprint in a single comprehensive file."
+                        "Implement EVERY feature, 12-column Bento Grid layout, pre-populated demo data, toast notification, keyboard shortcut, and settings modal from this blueprint in a single comprehensive file."
                     )
             messages.append({
                 "role": "system",
@@ -1780,7 +1782,7 @@ async def upload_image(
                 ],
             }],
             temperature=0.2,
-            max_tokens=1000,
+            max_tokens=1500,
         ).strip()
 
         note = f"[User uploaded an image/screenshot]\nExtracted Image Details:\n{image_description}"
