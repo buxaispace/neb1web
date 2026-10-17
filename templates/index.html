@@ -1,36 +1,756 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Site Down</title>
-    <!-- Import Grok-style fonts from Google Fonts -->
-    <link rel="preconnect" href="https://googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
-    
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            background-color: #000000;
-            color: #ffffff;
-            /* Prioritizes Grok's interface monospace font with a modern sans-serif fallback */
-            font-family: 'IBM Plex Mono', 'Inter', system-ui, -apple-system, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            text-align: center;
-        }
-        h1 {
-            font-size: 2.2rem;
-            font-weight: 400;
-            letter-spacing: -0.03em;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#0a0a0b" />
+  <title>Nebula 1</title>
+  <style>
+    :root {
+      --bg: #0a0a0b; --surface: #121214; --elevated: #1a1a1e; --border: #2a2a30;
+      --text: #f4f4f5; --muted: #71717a; --user: #a5b4fc; --ai: #5eead4;
+      --accent: #6366f1; --accent-hover: #818cf8; --green: #34d399; --amber: #fbbf24; --danger: #f87171;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%; background: var(--bg); color: var(--text);
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px; -webkit-text-size-adjust: 100%;
+    }
+    body { display: flex; flex-direction: column; max-width: 960px; margin: 0 auto; }
+
+    #auth-screen {
+      flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px;
+      background: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99,102,241,0.18), transparent);
+    }
+    .auth-card {
+      width: 100%; max-width: 400px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 20px; padding: 32px 28px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+    }
+    .auth-logo {
+      width: 40px; height: 40px; border-radius: 12px;
+      background: linear-gradient(135deg, #6366f1, #22d3ee); margin-bottom: 16px;
+    }
+    .auth-card h1 { font-size: 1.35rem; font-weight: 700; }
+    .auth-card .sub { color: var(--muted); font-size: 0.9rem; margin: 6px 0 22px; }
+    .auth-card label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+    .auth-card input {
+      width: 100%; background: var(--elevated); border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); font-size: 0.95rem; padding: 12px 14px; margin-bottom: 14px; outline: none;
+    }
+    .auth-card input:focus { border-color: var(--accent); }
+    .optional { font-weight: 400; color: #52525b; }
+    .btn-primary {
+      width: 100%; background: var(--accent); color: #fff; border: none; border-radius: 10px;
+      padding: 13px; font-weight: 600; font-size: 0.95rem; cursor: pointer; margin-top: 6px;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+    .auth-toggle { text-align: center; margin-top: 18px; font-size: 0.88rem; color: var(--muted); }
+    .auth-toggle a { color: var(--accent-hover); cursor: pointer; font-weight: 500; }
+    .auth-error {
+      background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.3);
+      color: var(--danger); font-size: 0.85rem; padding: 10px 12px; border-radius: 8px; margin-bottom: 14px; display: none;
+    }
+    .reg-only { display: none; }
+
+    #chat-screen { display: none; flex-direction: column; height: 100%; position: relative; }
+    .chat-body { display: flex; flex: 1; min-height: 0; }
+
+    #sidebar {
+      width: 260px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; transition: transform 0.2s ease;
+    }
+    .sidebar-top { padding: 12px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+    #new-chat-btn {
+      flex: 1; background: var(--accent); color: #fff; border: none; border-radius: 10px;
+      padding: 10px; font-weight: 600; font-size: 0.85rem; cursor: pointer;
+    }
+    #conv-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .conv-item {
+      display: flex; align-items: center; gap: 6px; padding: 10px; border-radius: 10px;
+      cursor: pointer; color: var(--muted); font-size: 0.85rem; margin-bottom: 2px;
+    }
+    .conv-item:hover, .conv-item.active { background: var(--elevated); color: var(--text); }
+    .conv-item .title-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conv-item .del {
+      background: none; border: none; color: var(--muted); cursor: pointer; font-size: 0.9rem;
+      padding: 2px 6px; opacity: 0;
+    }
+    .conv-item:hover .del { opacity: 1; }
+    .conv-item .del:hover { color: var(--danger); }
+
+    .main-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    header {
+      background: rgba(18,18,20,0.85); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border);
+      padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    #menu-btn {
+      display: none; background: var(--elevated); border: 1px solid var(--border); color: var(--text);
+      width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 1.1rem;
+    }
+    .title { font-weight: 700; font-size: 1.05rem; display: flex; align-items: center; gap: 8px; }
+    .badge {
+      background: var(--elevated); color: var(--muted); font-size: 0.65rem; padding: 3px 8px;
+      border-radius: 999px; font-weight: 600; text-transform: uppercase;
+    }
+    #plan-badge {
+      background: #1e1b4b; color: #a5b4fc; font-size: 0.65rem; padding: 3px 8px;
+      border-radius: 999px; font-weight: 600; text-transform: uppercase; cursor: pointer; border: none;
+    }
+    .header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    #status { font-size: 0.75rem; color: var(--green); font-weight: 500; }
+    #edit-name-btn {
+      background: transparent; border: none; color: var(--muted); font-size: 0.8rem; cursor: pointer;
+      display: flex; align-items: center; gap: 4px; max-width: 100px; padding: 4px 6px; border-radius: 8px;
+    }
+    #edit-name-btn:hover { color: var(--text); background: var(--elevated); }
+    #user-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #logout-btn, #plans-btn {
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      font-size: 0.75rem; padding: 5px 10px; border-radius: 8px; cursor: pointer; font-weight: 500;
+    }
+    #logout-btn:hover, #plans-btn:hover { color: var(--text); border-color: var(--muted); }
+
+    #verify-banner {
+      display: none; background: #422006; color: #fde68a; padding: 10px 16px; font-size: 0.85rem;
+      border-bottom: 1px solid #78350f; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    #verify-banner button {
+      background: #fbbf24; color: #000; border: none; border-radius: 8px; padding: 6px 12px;
+      font-weight: 600; font-size: 0.8rem; cursor: pointer; white-space: nowrap;
+    }
+
+    #chat { flex: 1; overflow-y: auto; padding: 20px 18px; -webkit-overflow-scrolling: touch; background: var(--bg); }
+    .msg { margin-bottom: 20px; animation: fadeIn 0.2s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .msg .role { font-size: 0.75rem; font-weight: 600; margin-bottom: 5px; }
+    .msg.user .role { color: var(--user); }
+    .msg.ai .role { color: var(--ai); }
+    .msg.system .role { color: var(--green); font-style: italic; }
+    .msg .body { line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: #e4e4e7; }
+    .msg.ai .body { color: #a1a1aa; }
+    .msg .sep { margin-top: 14px; border: none; border-top: 1px solid var(--border); opacity: 0.6; }
+
+    #input-bar { background: var(--bg); padding: 12px 16px 16px; border-top: 1px solid var(--border); flex-shrink: 0; }
+    .preview {
+      margin-bottom: 10px; display: none; align-items: center; gap: 10px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px;
+    }
+    .preview img { max-height: 56px; border-radius: 8px; }
+    .preview .meta { font-size: 0.78rem; color: var(--muted); flex: 1; }
+    .preview .remove { background: none; border: none; color: var(--danger); font-size: 1.2rem; cursor: pointer; }
+    .input-row {
+      display: flex; gap: 8px; align-items: flex-end; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 16px; padding: 8px 10px;
+    }
+    #message {
+      flex: 1; background: transparent; border: none; color: var(--text); font-size: 0.95rem;
+      padding: 8px 4px; resize: none; max-height: 120px; outline: none; font-family: inherit;
+    }
+    .icon-btn {
+      width: 36px; height: 36px; border-radius: 10px; background: var(--elevated); border: 1px solid var(--border);
+      color: var(--muted); font-size: 1.25rem; font-weight: 300; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .icon-btn:hover { color: var(--text); }
+    .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #file-input { display: none; }
+    .btn {
+      border: none; border-radius: 10px; padding: 9px 14px; font-weight: 600; font-size: 0.85rem;
+      cursor: pointer; color: #fff; flex-shrink: 0;
+    }
+    #send-btn { background: var(--accent); }
+    #reset-btn { background: var(--elevated); color: var(--muted); border: 1px solid var(--border); }
+
+    .typing { display: inline-flex; gap: 4px; padding: 6px 0; }
+    .typing span {
+      width: 6px; height: 6px; background: var(--ai); border-radius: 50%;
+      animation: bounce 1.2s infinite ease-in-out;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.15s; }
+    .typing span:nth-child(3) { animation-delay: 0.3s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    #sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 20; }
+
+    /* Plans modal */
+    #plans-modal {
+      display: none; position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.7);
+      align-items: center; justify-content: center; padding: 20px;
+    }
+    #plans-modal.open { display: flex; }
+    .plans-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+      padding: 24px; max-width: 720px; width: 100%; max-height: 90vh; overflow-y: auto;
+    }
+    .plans-card h2 { margin-bottom: 8px; }
+    .plans-card .sub { color: var(--muted); margin-bottom: 20px; font-size: 0.9rem; }
+    .plans-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .plan-box {
+      border: 1px solid var(--border); border-radius: 14px; padding: 16px; background: var(--elevated);
+    }
+    .plan-box h3 { font-size: 1rem; margin-bottom: 4px; }
+    .plan-box .price { font-size: 1.4rem; font-weight: 700; margin: 8px 0; }
+    .plan-box ul { list-style: none; font-size: 0.82rem; color: var(--muted); line-height: 1.6; margin-bottom: 14px; }
+    .plan-box button {
+      width: 100%; padding: 10px; border-radius: 10px; border: none; font-weight: 600; cursor: pointer;
+      background: var(--accent); color: #fff;
+    }
+    .plan-box button:disabled { background: #3f3f46; color: var(--muted); cursor: default; }
+    .plans-close {
+      margin-top: 16px; width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--border);
+      background: transparent; color: var(--muted); cursor: pointer;
+    }
+
+    @media (max-width: 720px) {
+      #menu-btn { display: flex; align-items: center; justify-content: center; }
+      #sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 30; transform: translateX(-100%); }
+      #sidebar.open { transform: translateX(0); }
+      #sidebar-overlay.open { display: block; }
+    }
+    @supports (padding: max(0px)) {
+      #input-bar { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+    }
+  </style>
 </head>
 <body>
-    <h1>Nebula 1 has been taken down by AstroVectAI(the owners of Nebula, now renamed to Daedalus) and will have a website soon, Follow @AstroVectAI on X for updates.</h1>
+  <div id="auth-screen">
+    <div class="auth-card">
+      <div class="auth-logo"></div>
+      <h1>Nebula 1</h1>
+      <p class="sub" id="auth-sub">Sign in to continue</p>
+      <div class="auth-error" id="auth-error"></div>
+      <form id="auth-form" onsubmit="return false;">
+        <div class="reg-only" id="name-field">
+          <label for="auth-name">What should Nebula call you?</label>
+          <input type="text" id="auth-name" maxlength="100" placeholder="Your name" />
+        </div>
+        <label for="auth-email">Email</label>
+        <input type="email" id="auth-email" required placeholder="you@email.com" />
+        <label for="auth-password">Password</label>
+        <input type="password" id="auth-password" required minlength="6" placeholder="••••••••" />
+        <div class="reg-only" id="bday-field">
+          <label for="auth-birthday">Birthday <span class="optional">(optional)</span></label>
+          <input type="date" id="auth-birthday" />
+        </div>
+        <button type="button" class="btn-primary" id="auth-submit">Sign in</button>
+      </form>
+      <div class="auth-toggle">
+        <span id="toggle-text">No account?</span>
+        <a id="toggle-link">Create one</a>
+      </div>
+    </div>
+  </div>
+
+  <div id="chat-screen">
+    <div id="verify-banner">
+      <span id="verify-text">Please verify your email to use Nebula 1.</span>
+      <button type="button" id="resend-verify">Resend email</button>
+    </div>
+    <div id="sidebar-overlay"></div>
+    <div class="chat-body">
+      <aside id="sidebar">
+        <div class="sidebar-top">
+          <button type="button" id="new-chat-btn">+ New chat</button>
+        </div>
+        <div id="conv-list"></div>
+      </aside>
+      <div class="main-col">
+        <header>
+          <div class="header-left">
+            <button type="button" id="menu-btn">☰</button>
+            <div class="title">Nebula 1 <span class="badge">web</span></div>
+            <button type="button" id="plan-badge">free</button>
+          </div>
+          <div class="header-right">
+            <span id="status">Ready</span>
+            <button type="button" id="edit-name-btn"><span id="user-label"></span> <span>✎</span></button>
+            <button type="button" id="plans-btn">Plans</button>
+            <button type="button" id="logout-btn">Log out</button>
+          </div>
+        </header>
+        <div id="chat"></div>
+        <div id="input-bar">
+          <div class="preview" id="preview">
+            <img id="preview-img" alt="" />
+            <div class="meta" id="preview-meta"></div>
+            <button type="button" class="remove" id="remove-preview">×</button>
+          </div>
+          <div class="input-row">
+            <button type="button" class="icon-btn" id="cam-btn" title="Attach (Premium)">+</button>
+            <input type="file" id="file-input" accept="image/*" capture="environment" />
+            <textarea id="message" rows="1" placeholder="Message Nebula 1…"></textarea>
+            <button type="button" class="btn" id="reset-btn">Reset</button>
+            <button type="button" class="btn" id="send-btn">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="plans-modal">
+    <div class="plans-card">
+      <h2>Plans</h2>
+      <p class="sub">Upgrade anytime. You can also be granted a plan by the owner.</p>
+      <div class="plans-grid">
+        <div class="plan-box">
+          <h3>Free</h3>
+          <div class="price">$0</div>
+          <ul>
+            <li>• gpt-oss-20b</li>
+            <li>• Multi-chat memory</li>
+            <li>• No images</li>
+          </ul>
+          <button type="button" disabled id="btn-free">Current / included</button>
+        </div>
+        <div class="plan-box">
+          <h3>Plus</h3>
+          <div class="price">$4/mo</div>
+          <ul>
+            <li>• gpt-oss-120b</li>
+            <li>• Multi-chat memory</li>
+            <li>• No images</li>
+          </ul>
+          <button type="button" id="btn-plus">Upgrade to Plus</button>
+        </div>
+        <div class="plan-box">
+          <h3>Premium</h3>
+          <div class="price">$8/mo</div>
+          <ul>
+            <li>• gpt-oss-120b</li>
+            <li>• Image uploads</li>
+            <li>• Multi-chat memory</li>
+          </ul>
+          <button type="button" id="btn-premium">Upgrade to Premium</button>
+        </div>
+      </div>
+      <button type="button" class="plans-close" id="plans-close">Close</button>
+    </div>
+  </div>
+
+  <script>
+    const authScreen = document.getElementById("auth-screen");
+    const chatScreen = document.getElementById("chat-screen");
+    const authForm = document.getElementById("auth-form");
+    const authName = document.getElementById("auth-name");
+    const authEmail = document.getElementById("auth-email");
+    const authPassword = document.getElementById("auth-password");
+    const authBirthday = document.getElementById("auth-birthday");
+    const authSubmit = document.getElementById("auth-submit");
+    const authError = document.getElementById("auth-error");
+    const authSub = document.getElementById("auth-sub");
+    const toggleText = document.getElementById("toggle-text");
+    const toggleLink = document.getElementById("toggle-link");
+    const nameField = document.getElementById("name-field");
+    const bdayField = document.getElementById("bday-field");
+    const logoutBtn = document.getElementById("logout-btn");
+    const userLabel = document.getElementById("user-label");
+    const editNameBtn = document.getElementById("edit-name-btn");
+    const chatEl = document.getElementById("chat");
+    const msgInput = document.getElementById("message");
+    const sendBtn = document.getElementById("send-btn");
+    const resetBtn = document.getElementById("reset-btn");
+    const statusEl = document.getElementById("status");
+    const fileInput = document.getElementById("file-input");
+    const camBtn = document.getElementById("cam-btn");
+    const preview = document.getElementById("preview");
+    const previewImg = document.getElementById("preview-img");
+    const previewMeta = document.getElementById("preview-meta");
+    const removePreview = document.getElementById("remove-preview");
+    const convList = document.getElementById("conv-list");
+    const newChatBtn = document.getElementById("new-chat-btn");
+    const menuBtn = document.getElementById("menu-btn");
+    const sidebar = document.getElementById("sidebar");
+    const sidebarOverlay = document.getElementById("sidebar-overlay");
+    const verifyBanner = document.getElementById("verify-banner");
+    const resendVerify = document.getElementById("resend-verify");
+    const planBadge = document.getElementById("plan-badge");
+    const plansBtn = document.getElementById("plans-btn");
+    const plansModal = document.getElementById("plans-modal");
+    const plansClose = document.getElementById("plans-close");
+    const btnPlus = document.getElementById("btn-plus");
+    const btnPremium = document.getElementById("btn-premium");
+    const btnFree = document.getElementById("btn-free");
+
+    let isRegister = false;
+    let selectedFile = null;
+    let currentConvId = null;
+    let userPlan = "free";
+    let emailVerified = true;
+    let canImages = false;
+
+    function getToken() { return localStorage.getItem("nebula_token"); }
+    function setToken(t) { localStorage.setItem("nebula_token", t); }
+    function clearToken() {
+      localStorage.removeItem("nebula_token");
+      localStorage.removeItem("nebula_email");
+      localStorage.removeItem("nebula_name");
+      localStorage.removeItem("nebula_conv");
+    }
+    function authHeaders() {
+      const t = getToken();
+      return t ? { Authorization: "Bearer " + t } : {};
+    }
+    function showError(msg) { authError.textContent = msg; authError.style.display = "block"; }
+    function hideError() { authError.style.display = "none"; }
+    function showAuth() { authScreen.style.display = "flex"; chatScreen.style.display = "none"; }
+    function showChatUI(name) {
+      authScreen.style.display = "none";
+      chatScreen.style.display = "flex";
+      userLabel.textContent = name || localStorage.getItem("nebula_name") || "";
+    }
+    function setStatus(text, color) {
+      statusEl.textContent = text;
+      statusEl.style.color = color || "var(--green)";
+    }
+    function applyPlanUI() {
+      planBadge.textContent = userPlan || "free";
+      canImages = userPlan === "premium";
+      camBtn.disabled = !canImages;
+      camBtn.title = canImages ? "Attach image" : "Images require Premium";
+      verifyBanner.style.display = emailVerified ? "none" : "flex";
+      if (userPlan === "plus") { btnPlus.disabled = true; btnPlus.textContent = "Current plan"; }
+      else { btnPlus.disabled = false; btnPlus.textContent = "Upgrade to Plus"; }
+      if (userPlan === "premium") { btnPremium.disabled = true; btnPremium.textContent = "Current plan"; }
+      else { btnPremium.disabled = false; btnPremium.textContent = "Upgrade to Premium"; }
+      btnFree.textContent = userPlan === "free" ? "Current plan" : "Included at free";
+    }
+    function addMessage(role, text) {
+      const div = document.createElement("div");
+      div.className = "msg " + role;
+      const roleLabel = role === "user" ? "You" : role === "ai" ? "Nebula 1" : "System";
+      div.innerHTML = '<div class="role">' + roleLabel + '</div><div class="body"></div>' + (role === "ai" ? '<hr class="sep" />' : "");
+      div.querySelector(".body").textContent = text;
+      chatEl.appendChild(div);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+    function showTyping() {
+      const div = document.createElement("div");
+      div.className = "msg ai"; div.id = "typing";
+      div.innerHTML = '<div class="role">Nebula 1</div><div class="typing"><span></span><span></span><span></span></div>';
+      chatEl.appendChild(div); chatEl.scrollTop = chatEl.scrollHeight;
+    }
+    function hideTyping() { const t = document.getElementById("typing"); if (t) t.remove(); }
+    function autoResize() {
+      msgInput.style.height = "auto";
+      msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + "px";
+    }
+    function clearPreview() {
+      selectedFile = null; fileInput.value = ""; preview.style.display = "none"; previewImg.src = "";
+    }
+    function closeSidebar() { sidebar.classList.remove("open"); sidebarOverlay.classList.remove("open"); }
+    function openSidebar() { sidebar.classList.add("open"); sidebarOverlay.classList.add("open"); }
+
+    function setRegisterMode(on) {
+      isRegister = on; hideError();
+      nameField.style.display = on ? "block" : "none";
+      bdayField.style.display = on ? "block" : "none";
+      authName.required = on;
+      if (on) {
+        authSub.textContent = "Create your account";
+        authSubmit.textContent = "Create account";
+        toggleText.textContent = "Already have an account?";
+        toggleLink.textContent = "Sign in";
+      } else {
+        authSub.textContent = "Sign in to continue";
+        authSubmit.textContent = "Sign in";
+        toggleText.textContent = "No account?";
+        toggleLink.textContent = "Create one";
+      }
+    }
+
+    toggleLink.addEventListener("click", function () { setRegisterMode(!isRegister); });
+    menuBtn.addEventListener("click", openSidebar);
+    sidebarOverlay.addEventListener("click", closeSidebar);
+    plansBtn.addEventListener("click", function () { plansModal.classList.add("open"); });
+    planBadge.addEventListener("click", function () { plansModal.classList.add("open"); });
+    plansClose.addEventListener("click", function () { plansModal.classList.remove("open"); });
+
+    async function doAuth() {
+      hideError();
+      const email = authEmail.value.trim();
+      const password = authPassword.value;
+      if (!email || !password) { showError("Email and password required"); return; }
+      if (isRegister && !authName.value.trim()) { showError("Please enter a name"); return; }
+      const endpoint = isRegister ? "/register" : "/login";
+      authSubmit.disabled = true;
+      try {
+        const form = new FormData();
+        form.append("email", email);
+        form.append("password", password);
+        if (isRegister) {
+          form.append("display_name", authName.value.trim());
+          if (authBirthday.value) form.append("birthday", authBirthday.value);
+        }
+        const res = await fetch(endpoint, { method: "POST", body: form });
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch (e) {
+          showError("Server error (not JSON). Check Render logs."); return;
+        }
+        if (data.error) { showError(data.error); return; }
+        if (!data.token) { showError("No token returned"); return; }
+        setToken(data.token);
+        localStorage.setItem("nebula_email", data.email || "");
+        localStorage.setItem("nebula_name", data.display_name || "");
+        userPlan = data.plan || "free";
+        emailVerified = !!data.email_verified;
+        currentConvId = data.conversation_id || null;
+        if (currentConvId) localStorage.setItem("nebula_conv", String(currentConvId));
+        showChatUI(data.display_name);
+        applyPlanUI();
+        if (data.message) addMessage("system", data.message);
+        await refreshConversations();
+        await loadHistory();
+      } catch (err) {
+        showError("Network error: " + err.message);
+      } finally {
+        authSubmit.disabled = false;
+      }
+    }
+
+    authSubmit.addEventListener("click", function (e) { e.preventDefault(); doAuth(); });
+    authForm.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); doAuth(); }
+    });
+
+    logoutBtn.addEventListener("click", function () {
+      clearToken(); currentConvId = null; chatEl.innerHTML = ""; convList.innerHTML = ""; showAuth();
+    });
+
+    resendVerify.addEventListener("click", async function () {
+      try {
+        const res = await fetch("/resend-verification", { method: "POST", headers: authHeaders() });
+        const data = await res.json();
+        if (data.email_verified || data.status === "auto_verified") {
+          emailVerified = true; applyPlanUI(); addMessage("system", "Email verified.");
+        } else if (data.status === "sent") {
+          addMessage("system", "Verification email sent. Check your inbox.");
+        } else if (data.error) alert(data.error);
+      } catch (e) { alert(e.message); }
+    });
+
+    editNameBtn.addEventListener("click", async function () {
+      const current = localStorage.getItem("nebula_name") || "";
+      const next = prompt("What should Nebula call you?", current);
+      if (next === null) return;
+      const name = next.trim();
+      if (!name) { alert("Name can't be empty"); return; }
+      const form = new FormData();
+      form.append("display_name", name);
+      const res = await fetch("/update-profile", { method: "POST", headers: authHeaders(), body: form });
+      if (res.status === 401) { clearToken(); showAuth(); return; }
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+      localStorage.setItem("nebula_name", data.display_name);
+      userLabel.textContent = data.display_name;
+    });
+
+    async function startCheckout(plan) {
+      try {
+        const form = new FormData();
+        form.append("plan", plan);
+        const res = await fetch("/create-checkout", { method: "POST", headers: authHeaders(), body: form });
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        if (data.url) window.location.href = data.url;
+      } catch (e) { alert(e.message); }
+    }
+    btnPlus.addEventListener("click", function () { startCheckout("plus"); });
+    btnPremium.addEventListener("click", function () { startCheckout("premium"); });
+
+    async function refreshConversations() {
+      try {
+        const res = await fetch("/conversations", { headers: authHeaders() });
+        if (res.status === 401) { clearToken(); showAuth(); return; }
+        const data = await res.json();
+        const list = data.conversations || [];
+        convList.innerHTML = "";
+        if (!currentConvId && list.length) {
+          currentConvId = list[0].id;
+          localStorage.setItem("nebula_conv", String(currentConvId));
+        }
+        list.forEach(function (c) {
+          const item = document.createElement("div");
+          item.className = "conv-item" + (c.id === currentConvId ? " active" : "");
+          item.innerHTML = '<span class="title-text"></span><button type="button" class="del">×</button>';
+          item.querySelector(".title-text").textContent = c.title || "New chat";
+          item.addEventListener("click", function (e) {
+            if (e.target.classList.contains("del")) return;
+            switchConversation(c.id);
+          });
+          item.querySelector(".del").addEventListener("click", function (e) {
+            e.stopPropagation(); deleteConversation(c.id);
+          });
+          convList.appendChild(item);
+        });
+      } catch (e) {}
+    }
+
+    async function switchConversation(id) {
+      currentConvId = id;
+      localStorage.setItem("nebula_conv", String(id));
+      closeSidebar();
+      await refreshConversations();
+      await loadHistory();
+    }
+
+    async function createConversation() {
+      if (!emailVerified) { alert("Verify your email first"); return; }
+      try {
+        const res = await fetch("/conversations", { method: "POST", headers: authHeaders() });
+        if (res.status === 401) { clearToken(); showAuth(); return; }
+        if (res.status === 403) { alert("Verify your email first"); return; }
+        const data = await res.json();
+        currentConvId = data.id;
+        localStorage.setItem("nebula_conv", String(data.id));
+        closeSidebar();
+        await refreshConversations();
+        chatEl.innerHTML = "";
+        addMessage("system", "System ready · Nebula 1");
+      } catch (err) { addMessage("system", "Could not create chat: " + err.message); }
+    }
+
+    async function deleteConversation(id) {
+      if (!confirm("Delete this chat?")) return;
+      const res = await fetch("/conversations/" + id, { method: "DELETE", headers: authHeaders() });
+      if (res.status === 401) { clearToken(); showAuth(); return; }
+      const data = await res.json();
+      currentConvId = data.conversation_id;
+      localStorage.setItem("nebula_conv", String(currentConvId));
+      await refreshConversations();
+      await loadHistory();
+    }
+
+    newChatBtn.addEventListener("click", createConversation);
+
+    async function loadHistory() {
+      chatEl.innerHTML = "";
+      if (!currentConvId) { addMessage("system", "System ready · Nebula 1"); return; }
+      try {
+        const res = await fetch("/history?conversation_id=" + currentConvId, { headers: authHeaders() });
+        if (res.status === 401) { clearToken(); showAuth(); return; }
+        const data = await res.json();
+        if (!data.messages || !data.messages.length) {
+          addMessage("system", "System ready · Nebula 1"); return;
+        }
+        data.messages.forEach(function (m) {
+          addMessage(m.role === "assistant" ? "ai" : "user", m.content);
+        });
+      } catch (e) { addMessage("system", "System ready · Nebula 1"); }
+    }
+
+    async function sendText() {
+      if (!emailVerified) { alert("Verify your email first"); return; }
+      const text = msgInput.value.trim();
+      if (!text && !selectedFile) return;
+      if (!currentConvId) await createConversation();
+      if (selectedFile) { await sendImage(text); return; }
+      addMessage("user", text);
+      msgInput.value = ""; autoResize();
+      setStatus("Thinking…", "var(--amber)"); showTyping(); sendBtn.disabled = true;
+      try {
+        const form = new FormData();
+        form.append("message", text);
+        form.append("conversation_id", currentConvId);
+        const res = await fetch("/chat", { method: "POST", headers: authHeaders(), body: form });
+        if (res.status === 401) { clearToken(); showAuth(); return; }
+        const data = await res.json();
+        hideTyping();
+        if (data.error) addMessage("system", "Error: " + data.error);
+        else { addMessage("ai", data.reply); if (data.title) refreshConversations(); }
+      } catch (err) {
+        hideTyping(); addMessage("system", "Network error: " + err.message);
+      }
+      setStatus("Ready", "var(--green)"); sendBtn.disabled = false; msgInput.focus();
+    }
+
+    async function sendImage(caption) {
+      if (!canImages) {
+        alert("Image upload requires Premium ($8/mo). Open Plans to upgrade.");
+        clearPreview(); return;
+      }
+      if (!currentConvId) await createConversation();
+      const label = caption ? "[Image] " + selectedFile.name + "\n" + caption : "[Image] " + selectedFile.name;
+      addMessage("user", label);
+      const form = new FormData();
+      form.append("file", selectedFile);
+      form.append("conversation_id", currentConvId);
+      if (caption) form.append("caption", caption);
+      clearPreview(); msgInput.value = ""; autoResize();
+      setStatus("Uploading…", "var(--amber)"); showTyping(); sendBtn.disabled = true;
+      try {
+        const res = await fetch("/upload", { method: "POST", headers: authHeaders(), body: form });
+        if (res.status === 401) { clearToken(); showAuth(); return; }
+        const data = await res.json();
+        hideTyping();
+        if (data.error) addMessage("system", "Error: " + data.error);
+        else { addMessage("ai", data.reply); if (data.title) refreshConversations(); }
+      } catch (err) {
+        hideTyping(); addMessage("system", "Network error: " + err.message);
+      }
+      setStatus("Ready", "var(--green)"); sendBtn.disabled = false; msgInput.focus();
+    }
+
+    async function resetChat() {
+      if (!currentConvId) return;
+      const form = new FormData();
+      form.append("conversation_id", currentConvId);
+      const res = await fetch("/reset", { method: "POST", headers: authHeaders(), body: form });
+      if (res.status === 401) { clearToken(); showAuth(); return; }
+      chatEl.innerHTML = "";
+      addMessage("system", "System ready · Nebula 1");
+      refreshConversations();
+    }
+
+    sendBtn.addEventListener("click", sendText);
+    resetBtn.addEventListener("click", resetChat);
+    msgInput.addEventListener("input", autoResize);
+    msgInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendText(); }
+    });
+    camBtn.addEventListener("click", function () {
+      if (!canImages) { alert("Images require Premium. Open Plans."); return; }
+      fileInput.click();
+    });
+    fileInput.addEventListener("change", function () {
+      const file = fileInput.files[0];
+      if (!file) return;
+      selectedFile = file;
+      previewImg.src = URL.createObjectURL(file);
+      previewMeta.textContent = file.name + " · " + Math.round(file.size / 1024) + " KB";
+      preview.style.display = "flex";
+    });
+    removePreview.addEventListener("click", clearPreview);
+
+    (async function init() {
+      if (getToken()) {
+        try {
+          const res = await fetch("/me", { headers: authHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            localStorage.setItem("nebula_email", data.email);
+            localStorage.setItem("nebula_name", data.display_name || "");
+            userPlan = data.plan || "free";
+            emailVerified = !!data.email_verified;
+            const saved = localStorage.getItem("nebula_conv");
+            if (saved) currentConvId = parseInt(saved, 10);
+            showChatUI(data.display_name);
+            applyPlanUI();
+            await refreshConversations();
+            await loadHistory();
+            return;
+          }
+        } catch (e) {}
+        clearToken();
+      }
+      showAuth();
+    })();
+  </script>
 </body>
 </html>
