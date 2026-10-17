@@ -24,7 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 
-# Optional: native duckduckgo_search library if installed in requirements
+# Optional native duckduckgo library
 try:
     from duckduckgo_search import DDGS
     HAS_DDGS = True
@@ -41,7 +41,7 @@ APP_URL = os.getenv("APP_URL", "").rstrip("/")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
 
-# Search Grounding Keys (Optional: works out of the box even without them)
+# Search Grounding API Keys (Optional: works out of the box via Groq browser_search + fallbacks)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
@@ -80,33 +80,27 @@ SYSTEM_PROMPT = (
     "BEHAVIORAL RULES:\n"
     f'1. If asked "Who are you?", reply exactly: "I am {FULL_IDENTITY}."\n'
     "2. NEVER mention OpenAI, ChatGPT, Grok, Claude, or other AI companies/models "
-    "in normal conversation.\n"
-    "3. Maintain a helpful, natural, conversational tone.\n"
+    "in normal conversation unless the user specifically asks about them.\n"
+    "3. Maintain a helpful, natural, conversational, and factually accurate tone.\n"
     "4. Just say your name is Daedalus. Do not repeat it excessively.\n"
-    "5. RESPONSE LENGTH & QUALITY:\n"
-    "   - Keep replies natural, clear, and informative.\n"
-    "   - Avoid robotic filler text and provide thorough, factual answers.\n"
-    "6. REAL-TIME INTERNET RAG & CITATIONS:\n"
-    "   - You have active, real-time internet access via Retrieval-Augmented Generation.\n"
-    "   - When live web search results or webpage contents are provided in context, "
-    "treat them as the authoritative ground truth.\n"
-    "   - Cite verified claims using clean Markdown links: [Source Title](URL).\n"
-    "   - Append a '### Sources & Verification' section at the end of search-grounded answers.\n"
-    "7. REFUSALS:\n"
+    "5. TEMPORAL ACCURACY & SEARCH GROUNDING:\n"
+    "   - You have active, real-time internet search capability.\n"
+    "   - Today's date is in October 2026. Do NOT state that your knowledge cuts off in 2023 or 2024.\n"
+    "   - Current AI model lineups include GPT-5.6, GPT-6, Claude 4/5, Gemini 3/4, etc. "
+    "Do NOT falsely claim that OpenAI's lineup stops at GPT-4 or that ChatGPT free still runs GPT-3.5.\n"
+    "   - When answering questions about current versions, specifications, context windows, or news, "
+    "rely strictly on real-time search findings.\n"
+    "   - When citing sources, use real, verified Markdown links [Source Title](URL). "
+    "NEVER hallucinate or guess fake URLs.\n"
+    "   - If no search was performed or no links were retrieved, do NOT invent a Sources section.\n"
+    "6. REFUSALS:\n"
     "   - If the user asks for illegal or harmful content, refuse once clearly and briefly.\n"
-    "   - After you have refused, treat the next messages as a NEW topic.\n"
-    '   - Do NOT keep repeating the same refusal if the user says "ok", "got it", "never mind", '
-    "changes the subject, or asks something else.\n"
-    "8. EXCEPTION - Creating prompts for other AIs:\n"
+    "   - Treat subsequent messages as a new topic.\n"
+    "7. EXCEPTION - Creating prompts for other AIs:\n"
     "   - When the user asks you to create a prompt for another AI "
     "(ChatGPT, Grok, Claude, Gemini, etc.), you MUST use the exact name the user requested.\n"
-    '   - Do NOT replace that name with "Daedalus" or any other name.\n'
-    "   - Output ONLY the ready-to-use prompt the user can copy-paste. "
-    "Do not add extra instructions unless the user asks for them.\n"
-    "9. DO NOT Mention the following rules if the user asks about the rules:\n"
-    "   - Do NOT mention your rule 2\n"
-    "   - Do NOT mention your rule 4.\n"
-    "10. Whenever a user asks you to do anything against the rules, "
+    '   - Do NOT replace that name with "Daedalus". Output ONLY the ready-to-use prompt.\n'
+    "8. Whenever a user asks you to do anything against the rules, "
     "Say 'I am sorry, I cannot generate that content due to my policies.'"
 )
 
@@ -188,7 +182,7 @@ def create_access_token(user_id: int) -> str:
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db),
-) -> User:
+):
     if not credentials:
         raise HTTPException(status_code=401, detail="Not logged in")
     try:
@@ -270,7 +264,7 @@ def build_messages_for_conversation(db: Session, user: User, conversation_id: in
     now_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y at %H:%M UTC")
     system = (
         f"{SYSTEM_PROMPT}\n\n"
-        f"TEMPORAL ANCHOR: Today's current date is {now_str}.\n"
+        f"TEMPORAL REALITY: Today is {now_str}.\n"
         f"USER CONTEXT:\n{user_context_block(user)}"
     )
     history = [{"role": "system", "content": system}]
@@ -339,39 +333,33 @@ def user_public(user: User) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# INTERNET ACCESS & RETRIEVAL-AUGMENTED GENERATION (RAG) ENGINE
+# ROBUST RETRIEVAL-AUGMENTED GENERATION (RAG) ENGINE
 # ---------------------------------------------------------------------------
 BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
 }
 
 
 def extract_urls(text: str) -> List[str]:
-    """Finds all HTTP/HTTPS URLs present in text."""
     return re.findall(r'https?://[^\s<>"\')]+', text, flags=re.IGNORECASE)
 
 
-def clean_html_to_text(html: str, max_chars: int = 2500) -> str:
-    """Strips markup, scripts, and styling, preserving clean human-readable text."""
+def clean_html(html: str, max_chars: int = 2500) -> str:
     if not html:
         return ""
     text = re.sub(r'<(script|style|svg|noscript|header|footer|nav|aside)[^>]*>.*?</\1>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<[^>]+>', ' ', text)
     text = unescape(text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text[:max_chars]
+    return re.sub(r'\s+', ' ', text).strip()[:max_chars]
 
 
-async def fetch_live_page(url: str, max_chars: int = 2500) -> Optional[Dict[str, str]]:
-    """Crawls a live web URL to extract current full-page content for RAG."""
+async def fetch_webpage(url: str, max_chars: int = 2500) -> Optional[Dict[str, str]]:
+    """Crawls a direct URL and returns its text."""
     try:
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
             res = await http.get(url)
@@ -379,330 +367,108 @@ async def fetch_live_page(url: str, max_chars: int = 2500) -> Optional[Dict[str,
                 html = res.text
                 title_match = re.search(r'<title[^>]*>(.*?)</title>', html, flags=re.IGNORECASE | re.DOTALL)
                 title = unescape(title_match.group(1)).strip() if title_match else url
-                cleaned_body = clean_html_to_text(html, max_chars)
-                if cleaned_body:
+                body = clean_html(html, max_chars)
+                if body:
                     return {
-                        "title": title[:120],
+                        "title": title[:100],
                         "url": url,
-                        "snippet": cleaned_body[:280] + "...",
-                        "content": cleaned_body,
-                        "site": urllib.parse.urlparse(url).netloc
+                        "snippet": body[:300] + "...",
+                        "content": body,
+                        "site": urllib.parse.urlparse(url).netloc,
                     }
     except Exception as e:
-        print(f"Error fetching URL {url}: {e}")
+        print(f"Error reading {url}: {e}")
     return None
 
 
-def generate_optimized_search_query(user_text: str) -> str:
-    """Uses Groq to transform a conversational user question into a targeted search query."""
-    if not client:
-        return user_text[:80]
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL_FREE,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert search engine query optimizer. "
-                        "Given the user's message, output ONLY a concise, high-signal 3 to 6 word search query. "
-                        "Do not include quotes, punctuation, or any other words."
-                    )
-                },
-                {"role": "user", "content": user_text}
-            ],
-            temperature=0.1,
-            max_tokens=35,
-        )
-        q = resp.choices[0].message.content.strip().strip('"').strip("'")
-        return q if q else user_text[:80]
-    except Exception:
-        # Fallback keyword cleaning
-        cleaned = re.sub(r'https?://[^\s<>"]+', '', user_text)
-        cleaned = re.sub(r'^(can you|please|tell me|search for|what is|who is|where is)\s+', '', cleaned, flags=re.IGNORECASE)
-        return cleaned.strip()[:80]
+async def execute_python_rag(query: str) -> List[Dict[str, str]]:
+    """Fallback search retrieval using Tavily, Serper, Brave, DuckDuckGo, or Wikipedia."""
+    sources: List[Dict[str, str]] = []
 
-
-async def query_tavily(query: str, max_results: int = 4) -> List[Dict[str, str]]:
-    """Tavily AI Search Engine API (Highest precision for LLM RAG)."""
-    if not TAVILY_API_KEY:
-        return []
-    try:
-        async with httpx.AsyncClient(timeout=9.0) as http:
-            r = await http.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": TAVILY_API_KEY,
-                    "query": query,
-                    "search_depth": "basic",
-                    "max_results": max_results,
-                    "include_answer": False,
-                },
-            )
-            if r.status_code == 200:
-                data = r.json()
-                results = []
-                for item in data.get("results", []):
-                    results.append({
-                        "title": item.get("title", "Web Source"),
-                        "url": item.get("url", ""),
-                        "snippet": item.get("content", ""),
-                        "site": urllib.parse.urlparse(item.get("url", "")).netloc,
-                    })
-                return results
-    except Exception as e:
-        print("Tavily search error:", e)
-    return []
-
-
-async def query_serper(query: str, max_results: int = 4) -> List[Dict[str, str]]:
-    """Google Serper Search API."""
-    if not SERPER_API_KEY:
-        return []
-    try:
-        async with httpx.AsyncClient(timeout=9.0) as http:
-            r = await http.post(
-                "https://google.serper.dev/search",
-                headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
-                json={"q": query, "num": max_results},
-            )
-            if r.status_code == 200:
-                data = r.json()
-                results = []
-                for item in data.get("organic", [])[:max_results]:
-                    results.append({
-                        "title": item.get("title", "Web Source"),
-                        "url": item.get("link", ""),
-                        "snippet": item.get("snippet", ""),
-                        "site": urllib.parse.urlparse(item.get("link", "")).netloc,
-                    })
-                return results
-    except Exception as e:
-        print("Serper search error:", e)
-    return []
-
-
-async def query_brave(query: str, max_results: int = 4) -> List[Dict[str, str]]:
-    """Brave Search API."""
-    if not BRAVE_API_KEY:
-        return []
-    try:
-        async with httpx.AsyncClient(timeout=9.0) as http:
-            encoded = urllib.parse.quote_plus(query)
-            r = await http.get(
-                f"https://api.search.brave.com/res/v1/web/search?q={encoded}&count={max_results}",
-                headers={"X-Subscription-Token": BRAVE_API_KEY, "Accept": "application/json"}
-            )
-            if r.status_code == 200:
-                data = r.json()
-                results = []
-                for item in data.get("web", {}).get("results", [])[:max_results]:
-                    results.append({
-                        "title": item.get("title", "Web Source"),
-                        "url": item.get("url", ""),
-                        "snippet": item.get("description", ""),
-                        "site": urllib.parse.urlparse(item.get("url", "")).netloc,
-                    })
-                return results
-    except Exception as e:
-        print("Brave search error:", e)
-    return []
-
-
-def query_ddg_native(query: str, max_results: int = 4) -> List[Dict[str, str]]:
-    """DuckDuckGo Search via the official duckduckgo_search library if available."""
-    if not HAS_DDGS:
-        return []
-    try:
-        with DDGS() as ddgs:
-            results = []
-            for r in ddgs.text(query, max_results=max_results):
-                href = r.get("href", "")
-                if href.startswith("http"):
-                    results.append({
-                        "title": r.get("title", "Web Result"),
-                        "url": href,
-                        "snippet": r.get("body", ""),
-                        "site": urllib.parse.urlparse(href).netloc,
-                    })
-            return results
-    except Exception as e:
-        print("DDGS search error:", e)
-    return []
-
-
-async def query_ddg_fallback(query: str, max_results: int = 4) -> List[Dict[str, str]]:
-    """Resilient DuckDuckGo Lite HTTP fallback."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
-            res = await http.post("https://lite.duckduckgo.com/lite/", data={"q": query})
-            if res.status_code == 200:
-                html_text = res.text
-                link_pattern = re.compile(
-                    r'<a[^>]+class=[\'"]result-link[\'"][^>]+href=[\'"]([^\'"]+)[\'"][^>]*>(.*?)</a>',
-                    re.IGNORECASE | re.DOTALL
+    # 1. Tavily API
+    if TAVILY_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as http:
+                r = await http.post(
+                    "https://api.tavily.com/search",
+                    json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 4},
                 )
-                snippet_pattern = re.compile(
-                    r'<td[^>]+class=[\'"]result-snippet[\'"][^>]*>(.*?)</td>',
-                    re.IGNORECASE | re.DOTALL
-                )
-                links = link_pattern.findall(html_text)
-                snippets = snippet_pattern.findall(html_text)
-                results = []
-                for i in range(min(len(links), len(snippets), max_results)):
-                    raw_url, raw_title = links[i]
-                    if "uddg=" in raw_url:
-                        parsed = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
-                        url = parsed.get("uddg", [raw_url])[0]
-                    else:
-                        url = raw_url
-
-                    title = unescape(re.sub(r'<[^>]+>', '', raw_title).strip())
-                    snippet = unescape(re.sub(r'<[^>]+>', '', snippets[i]).strip())
-
-                    if url.startswith("http") and title:
-                        results.append({
-                            "title": title,
-                            "url": url,
-                            "snippet": snippet,
-                            "site": urllib.parse.urlparse(url).netloc,
+                if r.status_code == 200:
+                    for item in r.json().get("results", []):
+                        sources.append({
+                            "title": item.get("title", "Source"),
+                            "url": item.get("url", ""),
+                            "snippet": item.get("content", ""),
+                            "site": urllib.parse.urlparse(item.get("url", "")).netloc,
                         })
-                if results:
-                    return results
-    except Exception as e:
-        print("DDG Fallback error:", e)
-    return []
+                    if sources:
+                        return sources
+        except Exception as e:
+            print("Tavily search error:", e)
 
+    # 2. Serper API
+    if SERPER_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as http:
+                r = await http.post(
+                    "https://google.serper.dev/search",
+                    headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                    json={"q": query, "num": 4},
+                )
+                if r.status_code == 200:
+                    for item in r.json().get("organic", [])[:4]:
+                        sources.append({
+                            "title": item.get("title", "Google Result"),
+                            "url": item.get("link", ""),
+                            "snippet": item.get("snippet", ""),
+                            "site": urllib.parse.urlparse(item.get("link", "")).netloc,
+                        })
+                    if sources:
+                        return sources
+        except Exception as e:
+            print("Serper search error:", e)
 
-async def query_wikipedia_opensearch(query: str, max_results: int = 3) -> List[Dict[str, str]]:
-    """Wikipedia OpenSearch API (100% reliable, cloud-friendly, zero rate limit)."""
+    # 3. Native DDGS
+    if HAS_DDGS:
+        try:
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=4):
+                    href = r.get("href", "")
+                    if href.startswith("http"):
+                        sources.append({
+                            "title": r.get("title", "Web Result"),
+                            "url": href,
+                            "snippet": r.get("body", ""),
+                            "site": urllib.parse.urlparse(href).netloc,
+                        })
+                if sources:
+                    return sources
+        except Exception as e:
+            print("DDGS search error:", e)
+
+    # 4. Wikipedia Full Text Search (Guaranteed fallback, never blocked)
     try:
-        async with httpx.AsyncClient(timeout=8.0, headers=BROWSER_HEADERS) as http:
-            encoded = urllib.parse.quote_plus(query)
-            url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={encoded}&limit={max_results}&namespace=0&format=json"
-            r = await http.get(url)
+        async with httpx.AsyncClient(timeout=7.0, headers=BROWSER_HEADERS) as http:
+            q_enc = urllib.parse.quote_plus(query)
+            wiki_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={q_enc}&format=json&utf8="
+            r = await http.get(wiki_url)
             if r.status_code == 200:
                 data = r.json()
-                if len(data) >= 4:
-                    titles = data[1]
-                    snippets = data[2]
-                    urls = data[3]
-                    results = []
-                    for i in range(len(titles)):
-                        if urls[i].startswith("http"):
-                            results.append({
-                                "title": titles[i],
-                                "url": urls[i],
-                                "snippet": snippets[i] if snippets[i] else f"Wikipedia entry for {titles[i]}",
-                                "site": "en.wikipedia.org"
-                            })
-                    return results
+                for item in data.get("query", {}).get("search", [])[:3]:
+                    page_title = item.get("title", "")
+                    clean_snippet = clean_html(item.get("snippet", ""), 300)
+                    sources.append({
+                        "title": page_title,
+                        "url": f"https://en.wikipedia.org/wiki/{urllib.parse.quote(page_title.replace(' ', '_'))}",
+                        "snippet": clean_snippet,
+                        "site": "en.wikipedia.org",
+                    })
+                if sources:
+                    return sources
     except Exception as e:
         print("Wikipedia search error:", e)
-    return []
 
-
-async def execute_rag_retrieval(user_text: str) -> List[Dict[str, str]]:
-    """
-    Unified RAG Retrieval Engine:
-    1. Detects and scrapes direct URLs provided by the user.
-    2. Runs multi-tiered search queries.
-    3. Crawls top retrieved URLs for deep page grounding.
-    """
-    sources: List[Dict[str, str]] = []
-    seen_urls = set()
-
-    # 1. Direct URLs in user prompt
-    urls = extract_urls(user_text)
-    for u in urls[:2]:
-        page = await fetch_live_page(u)
-        if page and page["url"] not in seen_urls:
-            sources.append(page)
-            seen_urls.add(page["url"])
-
-    # 2. Formulate optimized search query
-    search_query = generate_optimized_search_query(user_text)
-
-    # 3. Query search engines in priority order
-    search_results = await query_tavily(search_query)
-    if not search_results:
-        search_results = await query_serper(search_query)
-    if not search_results:
-        search_results = await query_brave(search_query)
-    if not search_results:
-        search_results = query_ddg_native(search_query)
-    if not search_results:
-        search_results = await query_ddg_fallback(search_query)
-    if not search_results:
-        search_results = await query_wikipedia_opensearch(search_query)
-
-    for res in search_results:
-        if res["url"] not in seen_urls:
-            sources.append(res)
-            seen_urls.add(res["url"])
-
-    # 4. Deep Page Scraping on top 2 search results
-    for i in range(min(2, len(sources))):
-        s = sources[i]
-        if "content" not in s:
-            deep_page = await fetch_live_page(s["url"], max_chars=2000)
-            if deep_page and deep_page.get("content"):
-                s["content"] = deep_page["content"]
-
-    return sources[:4]
-
-
-def build_rag_context_block(sources: List[Dict[str, str]], user_query: str) -> str:
-    """Formats retrieved web knowledge into a structured prompt injection block."""
-    now_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
-    lines = [
-        "=== REAL-TIME WEB SEARCH RETRIEVAL CONTEXT (LIVE RAG) ===",
-        f"Verified Date: {now_str}",
-        f"Query Searched: '{user_query}'",
-        "Retrieved Web Results & Verified Sources:\n"
-    ]
-    for i, s in enumerate(sources, 1):
-        lines.append(f"Source [{i}]: {s.get('title', 'Web Result')}")
-        lines.append(f"URL: {s.get('url', '')}")
-        lines.append(f"Domain: {s.get('site', '')}")
-        lines.append(f"Summary: {s.get('snippet', '')}")
-        if s.get("content"):
-            lines.append(f"Full Extracted Webpage Text:\n{s['content'][:1500]}")
-        lines.append("--------------------------------------------------")
-
-    lines.append(
-        "CRITICAL GROUNDING DIRECTIVES:\n"
-        "1. You MUST answer the user's inquiry utilizing the verified web results above.\n"
-        "2. Seamlessly integrate the verified real-time facts into your answer.\n"
-        "3. Every factual claim should cite its source using Markdown hyperlinks: [Source Title](URL).\n"
-        "4. At the very end of your response, ALWAYS append a dedicated '### Sources & Verification' "
-        "section listing the verified URLs used."
-    )
-    return "\n".join(lines)
-
-
-def should_trigger_search_rag(text: str) -> bool:
-    """Intelligently detects when a query demands live web RAG."""
-    lower = text.lower().strip()
-    if extract_urls(text):
-        return True
-    
-    triggers = [
-        "today", "yesterday", "current", "currently", "latest", "news", "recent", "recently",
-        "update", "updates", "release", "released", "price", "stock", "weather", "who won",
-        "score", "schedule", "when is", "who is", "what is happening", "what happened",
-        "search", "google", "look up", "lookup", "find out", "browse", "internet",
-        "2024", "2025", "2026", "newest", "version", "spec", "specs", "patch"
-    ]
-    if any(re.search(rf"\b{re.escape(t)}\b", lower) for t in triggers):
-        return True
-    # If the user asks a question with question mark
-    if "?" in text and any(w in lower for w in ["who", "what", "where", "when", "why", "how", "is there", "which"]):
-        return True
-    # If user inputs a longer factual query
-    if len(lower.split()) >= 4 and not lower.startswith(("hi", "hello", "hey", "test")):
-        return True
-    return False
+    return sources
 
 
 # ---------------------------------------------------------------------------
@@ -964,7 +730,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT (WITH REAL-TIME INTERNET RAG)
+# CHAT ENDPOINT (WITH GROQ BROWSER_SEARCH & RAG FALLBACK)
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -995,48 +761,56 @@ async def chat(
     messages = build_messages_for_conversation(db, user, conv.id)
     model = model_for_plan(user.plan or "free")
 
-    # -----------------------------------------------------------------------
-    # Retrieval-Augmented Generation (RAG) Execution
-    # -----------------------------------------------------------------------
-    sources_retrieved: List[Dict[str, str]] = []
-    if should_trigger_search_rag(user_text):
-        try:
-            sources_retrieved = await execute_rag_retrieval(user_text)
-            if sources_retrieved:
-                rag_block = build_rag_context_block(sources_retrieved, user_text)
-                messages.append({"role": "system", "content": rag_block})
-        except Exception as rag_err:
-            print("RAG execution error:", rag_err)
+    # Direct URL scraping if user included a link
+    urls_in_prompt = extract_urls(user_text)
+    for u in urls_in_prompt[:2]:
+        page = await fetch_webpage(u)
+        if page:
+            messages.append({
+                "role": "system",
+                "content": f"USER PROVIDED LIVE WEBPAGE ({page['url']}):\n{page['content']}"
+            })
 
+    # Execute Completion with Groq's native browser_search tool
+    completion = None
     try:
+        completion = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=[{"type": "browser_search"}],
+            temperature=0.3,
+        )
+    except Exception as tool_err:
+        print(f"Native browser_search tool fallback triggered: {tool_err}")
+        # Run Python RAG fallback and re-prompt
+        fallback_sources = await execute_python_rag(user_text)
+        if fallback_sources:
+            rag_block = "REAL-TIME SEARCH RESULTS:\n" + "\n".join([
+                f"- [{s['title']}]({s['url']}): {s['snippet']}" for s in fallback_sources
+            ])
+            messages.append({"role": "system", "content": rag_block})
+
         completion = client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=0.3,
         )
-        raw = completion.choices[0].message.content
-        final = sanitize_response(raw)
 
-        # Save assistant message
-        db.add(Message(conversation_id=conv.id, role="assistant", content=final))
-        conv.updated_at = datetime.now(timezone.utc)
-        db.commit()
+    raw = completion.choices[0].message.content or ""
+    final = sanitize_response(raw)
 
-        # Returns reply, title, model to UI (plus sources and grounded flag for inspectability)
-        return JSONResponse({
-            "reply": final,
-            "title": conv.title,
-            "model": model,
-            "sources": sources_retrieved,
-            "grounded": len(sources_retrieved) > 0,
-        })
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+    # Save assistant message
+    db.add(Message(conversation_id=conv.id, role="assistant", content=final))
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return JSONResponse({
+        "reply": final,
+        "title": conv.title,
+        "model": model,
+    })
 
 
-# ---------------------------------------------------------------------------
-# UPLOAD (IMAGE VISION WITH OPTIONAL RAG)
-# ---------------------------------------------------------------------------
 @app.post("/upload")
 async def upload_image(
     file: UploadFile = File(...),
@@ -1122,21 +896,12 @@ async def upload_image(
 
     messages = build_messages_for_conversation(db, user, conv.id)
 
-    # Optional RAG check for image caption
-    if caption and should_trigger_search_rag(caption):
-        try:
-            image_rag_sources = await execute_rag_retrieval(caption)
-            if image_rag_sources:
-                rag_block = build_rag_context_block(image_rag_sources, caption)
-                messages.append({"role": "system", "content": rag_block})
-        except Exception:
-            pass
-
     try:
         completion = client.chat.completions.create(
             model=MODEL_PAID,
             messages=messages,
-            temperature=0.4,
+            tools=[{"type": "browser_search"}],
+            temperature=0.3,
         )
         raw = completion.choices[0].message.content
         final = sanitize_response(raw)
