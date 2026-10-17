@@ -365,7 +365,6 @@
       const width = window.innerWidth || document.documentElement.clientWidth || screen.width;
       const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
       
-      // If wide desktop monitor (>= 1024px) and not mobile, use stretched mode; otherwise use compact mode
       if (width >= 1024 && !isMobileDevice) {
         document.body.classList.add("layout-stretched");
         document.body.classList.remove("layout-compact");
@@ -380,7 +379,7 @@
     searchDeviceAndAdaptLayout();
 
     // -------------------------------------------------------------
-    // Original UI Elements & State
+    // DOM Elements & State
     // -------------------------------------------------------------
     const authScreen = document.getElementById("auth-screen");
     const chatScreen = document.getElementById("chat-screen");
@@ -539,7 +538,7 @@
         const text = await res.text();
         let data;
         try { data = JSON.parse(text); } catch (e) {
-          showError("Server error (not JSON). Check Render logs."); return;
+          showError("Server error (" + res.status + "). Check Render logs."); return;
         }
         if (data.error) { showError(data.error); return; }
         if (!data.token) { showError("No token returned"); return; }
@@ -708,7 +707,19 @@
         form.append("conversation_id", currentConvId);
         const res = await fetch("/chat", { method: "POST", headers: authHeaders(), body: form });
         if (res.status === 401) { clearToken(); showAuth(); return; }
-        const data = await res.json();
+        
+        // Safe response parsing
+        const textResp = await res.text();
+        let data;
+        try {
+          data = JSON.parse(textResp);
+        } catch (parseErr) {
+          hideTyping();
+          addMessage("system", "Server error (" + res.status + "): Please try again.");
+          setStatus("Ready", "var(--green)"); sendBtn.disabled = false; msgInput.focus();
+          return;
+        }
+
         hideTyping();
         if (data.error) addMessage("system", "Error: " + data.error);
         else { addMessage("ai", data.reply); if (data.title) refreshConversations(); }
@@ -735,7 +746,19 @@
       try {
         const res = await fetch("/upload", { method: "POST", headers: authHeaders(), body: form });
         if (res.status === 401) { clearToken(); showAuth(); return; }
-        const data = await res.json();
+        
+        // Safe response parsing
+        const textResp = await res.text();
+        let data;
+        try {
+          data = JSON.parse(textResp);
+        } catch (parseErr) {
+          hideTyping();
+          addMessage("system", "Server error (" + res.status + "): Please try again.");
+          setStatus("Ready", "var(--green)"); sendBtn.disabled = false; msgInput.focus();
+          return;
+        }
+
         hideTyping();
         if (data.error) addMessage("system", "Error: " + data.error);
         else { addMessage("ai", data.reply); if (data.title) refreshConversations(); }
