@@ -107,9 +107,10 @@
     .main-col { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     header {
       background: rgba(18,18,20,0.85); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border);
-      padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+      padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+      gap: 10px;
     }
-    .header-left { display: flex; align-items: center; gap: 10px; }
+    .header-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     #menu-btn {
       display: none; background: var(--elevated); border: 1px solid var(--border); color: var(--text);
       width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 1.1rem;
@@ -123,6 +124,43 @@
       background: #1e1b4b; color: #a5b4fc; font-size: 0.65rem; padding: 3px 8px;
       border-radius: 999px; font-weight: 600; text-transform: uppercase; cursor: pointer; border: none;
     }
+
+    /* Model Switcher Segmented Tabs */
+    #model-tabs-wrap {
+      display: inline-flex;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .model-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .model-tab-btn.active {
+      background: var(--elevated);
+      color: var(--text);
+    }
+    .model-tab-btn.locked {
+      opacity: 0.45;
+      cursor: pointer;
+    }
+    .model-tab-btn.locked:hover {
+      opacity: 0.8;
+      color: var(--amber);
+    }
+
     .header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     #status { font-size: 0.75rem; color: var(--green); font-weight: 500; }
     #edit-name-btn {
@@ -290,6 +328,12 @@
             <button type="button" id="menu-btn">☰</button>
             <div class="title">Daedalus <span class="badge">web</span></div>
             <button type="button" id="plan-badge">free</button>
+
+            <!-- Model Switcher Tabs (20b | 120b) -->
+            <div id="model-tabs-wrap">
+              <button type="button" class="model-tab-btn active" id="tab-20b" data-model="gpt-oss-20b">20b</button>
+              <button type="button" class="model-tab-btn locked" id="tab-120b" data-model="gpt-oss-120b" title="120b requires Plus or Premium">120b 🔒</button>
+            </div>
           </div>
           <div class="header-right">
             <span id="status">Ready</span>
@@ -336,7 +380,7 @@
           <h3>Plus</h3>
           <div class="price">$4/mo</div>
           <ul>
-            <li>• gpt-oss-120b</li>
+            <li>• gpt-oss-120b & 20b switcher</li>
             <li>• Multi-chat memory</li>
             <li>• No images</li>
           </ul>
@@ -346,7 +390,7 @@
           <h3>Premium</h3>
           <div class="price">$8/mo</div>
           <ul>
-            <li>• gpt-oss-120b</li>
+            <li>• gpt-oss-120b & 20b switcher</li>
             <li>• Image uploads(Qwen 3.8)</li>
             <li>• Multi-chat memory</li>
           </ul>
@@ -424,12 +468,17 @@
     const btnPremium = document.getElementById("btn-premium");
     const btnFree = document.getElementById("btn-free");
 
+    // Model Switcher Elements
+    const tab20b = document.getElementById("tab-20b");
+    const tab120b = document.getElementById("tab-120b");
+
     let isRegister = false;
     let selectedFile = null;
     let currentConvId = null;
     let userPlan = "free";
     let emailVerified = true;
     let canImages = false;
+    let selectedModel = localStorage.getItem("daedalus_selected_model") || "gpt-oss-20b";
 
     function getToken() { return localStorage.getItem("nebula_token"); }
     function setToken(t) { localStorage.setItem("nebula_token", t); }
@@ -455,18 +504,69 @@
       statusEl.textContent = text;
       statusEl.style.color = color || "var(--green)";
     }
+
     function applyPlanUI() {
       planBadge.textContent = userPlan || "free";
       canImages = userPlan === "premium";
       camBtn.disabled = !canImages;
       camBtn.title = canImages ? "Attach image" : "Images require Premium";
       verifyBanner.style.display = emailVerified ? "none" : "flex";
+
+      const canSwitchModels = userPlan === "plus" || userPlan === "premium";
+
+      if (canSwitchModels) {
+        tab120b.classList.remove("locked");
+        tab120b.textContent = "120b";
+        tab120b.title = "Switch to gpt-oss-120b";
+        
+        // Restore user choice if paid, default to 120b if not chosen
+        if (!selectedModel || selectedModel === "gpt-oss-20b") {
+          selectedModel = localStorage.getItem("daedalus_selected_model") || "gpt-oss-120b";
+        }
+      } else {
+        // Free user locked to 20b
+        selectedModel = "gpt-oss-20b";
+        tab120b.classList.add("locked");
+        tab120b.textContent = "120b 🔒";
+        tab120b.title = "gpt-oss-120b requires Plus or Premium. Click to upgrade.";
+      }
+
+      // Update active tab styles
+      if (selectedModel === "gpt-oss-120b" && canSwitchModels) {
+        tab120b.classList.add("active");
+        tab20b.classList.remove("active");
+      } else {
+        tab20b.classList.add("active");
+        tab120b.classList.remove("active");
+      }
+
       if (userPlan === "plus") { btnPlus.disabled = true; btnPlus.textContent = "Current plan"; }
       else { btnPlus.disabled = false; btnPlus.textContent = "Upgrade to Plus"; }
       if (userPlan === "premium") { btnPremium.disabled = true; btnPremium.textContent = "Current plan"; }
       else { btnPremium.disabled = false; btnPremium.textContent = "Upgrade to Premium"; }
       btnFree.textContent = userPlan === "free" ? "Current plan" : "Included at free";
     }
+
+    // Model Tab Click Handlers
+    tab20b.addEventListener("click", function () {
+      selectedModel = "gpt-oss-20b";
+      localStorage.setItem("daedalus_selected_model", selectedModel);
+      tab20b.classList.add("active");
+      tab120b.classList.remove("active");
+    });
+
+    tab120b.addEventListener("click", function () {
+      const canSwitch = userPlan === "plus" || userPlan === "premium";
+      if (!canSwitch) {
+        plansModal.classList.add("open");
+        return;
+      }
+      selectedModel = "gpt-oss-120b";
+      localStorage.setItem("daedalus_selected_model", selectedModel);
+      tab120b.classList.add("active");
+      tab20b.classList.remove("active");
+    });
+
     function addMessage(role, text) {
       const div = document.createElement("div");
       div.className = "msg " + role;
@@ -705,10 +805,10 @@
         const form = new FormData();
         form.append("message", text);
         form.append("conversation_id", currentConvId);
+        form.append("model", selectedModel);
         const res = await fetch("/chat", { method: "POST", headers: authHeaders(), body: form });
         if (res.status === 401) { clearToken(); showAuth(); return; }
         
-        // Safe response parsing
         const textResp = await res.text();
         let data;
         try {
@@ -747,7 +847,6 @@
         const res = await fetch("/upload", { method: "POST", headers: authHeaders(), body: form });
         if (res.status === 401) { clearToken(); showAuth(); return; }
         
-        // Safe response parsing
         const textResp = await res.text();
         let data;
         try {
