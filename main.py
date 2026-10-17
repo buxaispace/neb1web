@@ -224,45 +224,46 @@ def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conv
 
 
 def clean_markdown_tables(text: str) -> str:
-    """
-    Transforms any raw markdown table (e.g. '| Detail | Information |')
-    into clean, readable bullet points and natural paragraphs.
-    """
-    if "|" not in text:
+    """Safely converts any pipe-delimited table into readable bullet points."""
+    if not text or "|" not in text:
+        return text or ""
+
+    try:
+        lines = text.splitlines()
+        new_lines = []
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2:
+                raw_parts = stripped.split("|")[1:-1]
+                parts = [p.strip() for p in raw_parts]
+
+                if not parts or not any(parts):
+                    continue
+
+                if all(re.match(r'^:?-+:?$', p) for p in parts if p):
+                    continue
+
+                first_col = parts[0].lower() if parts else ""
+                if any(h in first_col for h in ["detail", "property", "field", "attribute", "key", "topic", "category", "header"]):
+                    continue
+
+                if len(parts) == 2:
+                    key, val = parts[0], parts[1]
+                    val = re.sub(r'<br\s*/?>', '\n  ', val)
+                    new_lines.append(f"• {key}: {val}")
+                elif len(parts) > 2:
+                    row_str = " — ".join(p for p in parts if p)
+                    new_lines.append(f"• {row_str}")
+                elif len(parts) == 1 and parts[0]:
+                    new_lines.append(f"• {parts[0]}")
+            else:
+                new_lines.append(line)
+
+        result = "\n".join(new_lines)
+        return re.sub(r'\n{3,}', '\n\n', result).strip()
+    except Exception:
         return text
-
-    lines = text.splitlines()
-    new_lines = []
-
-    for line in lines:
-        stripped = line.strip()
-        # Check if line looks like a markdown table row with pipes
-        if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2:
-            parts = [p.strip() for p in stripped.split("|")[1:-1]]
-            
-            # Skip separator rows like |---|---|
-            if all(re.match(r'^:?-+:?$', p) for p in parts if p):
-                continue
-            
-            # Skip header row like | Detail | Information |
-            if any(h in parts[0].lower() for h in ["detail", "property", "field", "attribute", "key", "topic", "category", "header"]):
-                continue
-            
-            # Convert two-column table row into clean bullet point
-            if len(parts) == 2:
-                key, val = parts[0], parts[1]
-                val = re.sub(r'<br\s*/?>', '\n  ', val)
-                new_lines.append(f"• {key}: {val}")
-            elif len(parts) > 2:
-                row_str = " — ".join(p for p in parts if p)
-                new_lines.append(f"• {row_str}")
-            elif len(parts) == 1 and parts[0]:
-                new_lines.append(f"• {parts[0]}")
-        else:
-            new_lines.append(line)
-
-    result = "\n".join(new_lines)
-    return re.sub(r'\n{3,}', '\n\n', result).strip()
 
 
 def sanitize_response(text: str) -> str:
@@ -277,8 +278,7 @@ def sanitize_response(text: str) -> str:
     for phrase in forbidden:
         if phrase in cleaned:
             cleaned = cleaned.replace(phrase, MODEL_NAME)
-    
-    # Strip any markdown table pipe grids
+
     cleaned = clean_markdown_tables(cleaned)
     return cleaned
 
@@ -386,7 +386,7 @@ BROWSER_HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
@@ -406,7 +406,7 @@ def clean_html(html: str, max_chars: int = 2500) -> str:
 
 async def fetch_webpage(url: str, max_chars: int = 2500) -> Optional[Dict[str, str]]:
     try:
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
             res = await http.get(url)
             if res.status_code == 200:
                 html = res.text
@@ -429,9 +429,10 @@ async def fetch_webpage(url: str, max_chars: int = 2500) -> Optional[Dict[str, s
 async def execute_python_rag(query: str) -> List[Dict[str, str]]:
     sources: List[Dict[str, str]] = []
 
+    # 1. Tavily API
     if TAVILY_API_KEY:
         try:
-            async with httpx.AsyncClient(timeout=8.0) as http:
+            async with httpx.AsyncClient(timeout=6.0) as http:
                 r = await http.post(
                     "https://api.tavily.com/search",
                     json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 4},
@@ -447,11 +448,12 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                     if sources:
                         return sources
         except Exception as e:
-            print("Tavily search error:", e)
+            print("Tavily search warning:", e)
 
+    # 2. Serper API
     if SERPER_API_KEY:
         try:
-            async with httpx.AsyncClient(timeout=8.0) as http:
+            async with httpx.AsyncClient(timeout=6.0) as http:
                 r = await http.post(
                     "https://google.serper.dev/search",
                     headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
@@ -468,8 +470,9 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                     if sources:
                         return sources
         except Exception as e:
-            print("Serper search error:", e)
+            print("Serper search warning:", e)
 
+    # 3. Native DDGS
     if HAS_DDGS:
         try:
             with DDGS() as ddgs:
@@ -485,10 +488,11 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                 if sources:
                     return sources
         except Exception as e:
-            print("DDGS search error:", e)
+            print("DDGS search warning:", e)
 
+    # 4. Wikipedia Full Text Search (Guaranteed fallback, zero rate-limit)
     try:
-        async with httpx.AsyncClient(timeout=7.0, headers=BROWSER_HEADERS) as http:
+        async with httpx.AsyncClient(timeout=6.0, headers=BROWSER_HEADERS) as http:
             q_enc = urllib.parse.quote_plus(query)
             wiki_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={q_enc}&format=json&utf8="
             r = await http.get(wiki_url)
@@ -506,7 +510,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                 if sources:
                     return sources
     except Exception as e:
-        print("Wikipedia search error:", e)
+        print("Wikipedia search warning:", e)
 
     return sources
 
@@ -783,71 +787,80 @@ async def chat(
     if not client:
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
-    conv = get_user_conversation(db, user, conversation_id)
-    user_text = message.strip()
-    if not user_text:
-        return JSONResponse({"error": "Empty message"}, status_code=400)
-
-    msg_count = db.query(Message).filter(Message.conversation_id == conv.id).count()
-    if msg_count == 0 and conv.title == "New chat":
-        conv.title = make_title_from_text(user_text)
-
-    # Save user message
-    db.add(Message(conversation_id=conv.id, role="user", content=user_text))
-    conv.updated_at = datetime.now(timezone.utc)
-    db.commit()
-
-    # Build conversation history
-    messages = build_messages_for_conversation(db, user, conv.id)
-    model = model_for_plan(user.plan or "free")
-
-    # Direct URL scraping if user provided a link
-    urls_in_prompt = extract_urls(user_text)
-    for u in urls_in_prompt[:2]:
-        page = await fetch_webpage(u)
-        if page:
-            messages.append({
-                "role": "system",
-                "content": f"USER PROVIDED LIVE WEBPAGE ({page['url']}):\n{page['content']}"
-            })
-
-    # Execute Completion with Groq's native browser_search tool
-    completion = None
     try:
+        conv = get_user_conversation(db, user, conversation_id)
+        user_text = message.strip()
+        if not user_text:
+            return JSONResponse({"error": "Empty message"}, status_code=400)
+
+        msg_count = db.query(Message).filter(Message.conversation_id == conv.id).count()
+        if msg_count == 0 and conv.title == "New chat":
+            conv.title = make_title_from_text(user_text)
+
+        # Save user message
+        db.add(Message(conversation_id=conv.id, role="user", content=user_text))
+        conv.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        # Build conversation history
+        messages = build_messages_for_conversation(db, user, conv.id)
+        model = model_for_plan(user.plan or "free")
+
+        # -------------------------------------------------------------------
+        # Pre-Flight RAG Grounding (Non-fatal, never crashes)
+        # -------------------------------------------------------------------
+        try:
+            urls_in_prompt = extract_urls(user_text)
+            for u in urls_in_prompt[:2]:
+                page = await fetch_webpage(u)
+                if page:
+                    messages.append({
+                        "role": "system",
+                        "content": f"USER PROVIDED LIVE WEBPAGE ({page['url']}):\n{page['content']}"
+                    })
+
+            # Fetch real-time web context
+            live_sources = await execute_python_rag(user_text)
+            if live_sources:
+                rag_block = "REAL-TIME VERIFIED WEB SOURCES:\n" + "\n".join([
+                    f"- [{s['title']}]({s['url']}): {s.get('snippet', '')}" for s in live_sources[:4]
+                ])
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        f"{rag_block}\n\n"
+                        "GROUNDING DIRECTIVE:\n"
+                        "- Use the above live web findings as ground truth.\n"
+                        "- Cite claims with markdown links [Source Title](URL).\n"
+                        "- Do NOT use markdown tables (no `| Detail | Information |`)."
+                    )
+                })
+        except Exception as rag_err:
+            print(f"RAG pre-flight non-fatal warning: {rag_err}")
+
+        # Execute Completion
         completion = client.chat.completions.create(
             model=model,
             messages=messages,
-            tools=[{"type": "browser_search"}],
-            temperature=0.3,
-        )
-    except Exception as tool_err:
-        print(f"Native browser_search fallback triggered: {tool_err}")
-        fallback_sources = await execute_python_rag(user_text)
-        if fallback_sources:
-            rag_block = "REAL-TIME SEARCH RESULTS:\n" + "\n".join([
-                f"- [{s['title']}]({s['url']}): {s['snippet']}" for s in fallback_sources
-            ])
-            messages.append({"role": "system", "content": rag_block})
-
-        completion = client.chat.completions.create(
-            model=model,
-            messages=messages,
             temperature=0.3,
         )
 
-    raw = completion.choices[0].message.content or ""
-    final = sanitize_response(raw)
+        raw = completion.choices[0].message.content or ""
+        final = sanitize_response(raw)
 
-    # Save assistant message
-    db.add(Message(conversation_id=conv.id, role="assistant", content=final))
-    conv.updated_at = datetime.now(timezone.utc)
-    db.commit()
+        # Save assistant message
+        db.add(Message(conversation_id=conv.id, role="assistant", content=final))
+        conv.updated_at = datetime.now(timezone.utc)
+        db.commit()
 
-    return JSONResponse({
-        "reply": final,
-        "title": conv.title,
-        "model": model,
-    })
+        return JSONResponse({
+            "reply": final,
+            "title": conv.title,
+            "model": model,
+        })
+    except Exception as e:
+        print(f"Chat completion error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.post("/upload")
@@ -867,11 +880,11 @@ async def upload_image(
     if not client:
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
-    conv = get_user_conversation(db, user, conversation_id)
-
-    content = b""
-    chunk_size = 1024 * 1024
     try:
+        conv = get_user_conversation(db, user, conversation_id)
+
+        content = b""
+        chunk_size = 1024 * 1024
         while True:
             chunk = await file.read(chunk_size)
             if not chunk:
@@ -879,25 +892,22 @@ async def upload_image(
             content += chunk
             if len(content) > MAX_FILE_SIZE:
                 return JSONResponse({"error": "Image too large (max 20 MB)"}, status_code=400)
-    finally:
-        await file.close()
 
-    try:
-        img = Image.open(io.BytesIO(content))
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        img.thumbnail((2048, 2048))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85, optimize=True)
-        content = buf.getvalue()
-        mime = "image/jpeg"
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to process image: {e}"}, status_code=400)
+        try:
+            img = Image.open(io.BytesIO(content))
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.thumbnail((2048, 2048))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85, optimize=True)
+            content = buf.getvalue()
+            mime = "image/jpeg"
+        except Exception as e:
+            return JSONResponse({"error": f"Failed to process image: {e}"}, status_code=400)
 
-    b64 = base64.b64encode(content).decode("utf-8")
-    data_url = f"data:{mime};base64,{b64}"
+        b64 = base64.b64encode(content).decode("utf-8")
+        data_url = f"data:{mime};base64,{b64}"
 
-    try:
         vision_completion = client.chat.completions.create(
             model=VISION_MODEL,
             messages=[{
@@ -918,31 +928,27 @@ async def upload_image(
             max_tokens=500,
         )
         image_description = vision_completion.choices[0].message.content.strip()
-    except Exception as e:
-        return JSONResponse({"error": f"Vision error: {e}"}, status_code=500)
 
-    note = f"[User uploaded an image]\nImage description: {image_description}"
-    if caption and caption.strip():
-        note += f"\nUser said: {caption.strip()}"
+        note = f"[User uploaded an image]\nImage description: {image_description}"
+        if caption and caption.strip():
+            note += f"\nUser said: {caption.strip()}"
 
-    msg_count = db.query(Message).filter(Message.conversation_id == conv.id).count()
-    if msg_count == 0 and conv.title == "New chat":
-        conv.title = make_title_from_text(caption or "Image chat")
+        msg_count = db.query(Message).filter(Message.conversation_id == conv.id).count()
+        if msg_count == 0 and conv.title == "New chat":
+            conv.title = make_title_from_text(caption or "Image chat")
 
-    db.add(Message(conversation_id=conv.id, role="user", content=note))
-    conv.updated_at = datetime.now(timezone.utc)
-    db.commit()
+        db.add(Message(conversation_id=conv.id, role="user", content=note))
+        conv.updated_at = datetime.now(timezone.utc)
+        db.commit()
 
-    messages = build_messages_for_conversation(db, user, conv.id)
+        messages = build_messages_for_conversation(db, user, conv.id)
 
-    try:
         completion = client.chat.completions.create(
             model=MODEL_PAID,
             messages=messages,
-            tools=[{"type": "browser_search"}],
             temperature=0.3,
         )
-        raw = completion.choices[0].message.content
+        raw = completion.choices[0].message.content or ""
         final = sanitize_response(raw)
         db.add(Message(conversation_id=conv.id, role="assistant", content=final))
         conv.updated_at = datetime.now(timezone.utc)
@@ -954,6 +960,7 @@ async def upload_image(
             "size": len(content),
         })
     except Exception as e:
+        print(f"Upload error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
