@@ -83,6 +83,7 @@ FULL_IDENTITY = "Daedalus"
 MODEL_FREE = "openai/gpt-oss-20b"
 MODEL_PAID = "openai/gpt-oss-120b"
 VISION_MODEL = "qwen/qwen3.8-27b"
+DESIGN_MODEL = "qwen/qwen3.8-27b"
 MAX_FILE_SIZE = 20 * 1024 * 1024
 HISTORY_LIMIT = 60
 
@@ -125,17 +126,17 @@ SYSTEM_PROMPT = (
 )
 
 CODING_EXPERT_DIRECTIVE = (
-    "PRINCIPAL SOFTWARE ENGINEER & SENIOR UI/UX DESIGNER MODE ACTIVE:\n"
+    "PRINCIPAL SOFTWARE ENGINEER & CLAUDE OPUS / VERCEL UI DESIGNER MODE ACTIVE:\n"
     "1. CODE COMPLETENESS & FENCING:\n"
     "   - Write complete, production-ready, bug-free, and directly runnable code.\n"
     "   - NEVER use lazy placeholders like '// ... rest of code here' or '# TODO: implement'. Write the full implementation.\n"
     "   - CRITICAL FORMATTING: You MUST wrap all code inside triple-backtick markdown fences with the language identifier (e.g. ```html, ```python, ```javascript) and close with ```. NEVER output raw code without ``` fences.\n"
-    "2. MODERN UI/UX DESIGN STANDARDS (FOR HTML/CSS/WEB APPS):\n"
-    "   - Always include global `*, *::before, *::after { box-sizing: border-box; }`.\n"
-    "   - NEVER leave any `<button>`, `<input>`, or `<select>` unstyled (never allow default browser gray buttons).\n"
-    "   - For dark mode or glassmorphic UIs: Use deep rich backgrounds (`#09090b`) with colorful ambient `radial-gradient` glows behind cards, crisp `1px solid rgba(255,255,255,0.12)` borders, soft shadows (`0 20px 50px rgba(0,0,0,0.6)`), and modern accent palettes (indigo `#6366f1`, emerald `#10b981`, or violet `#8b5cf6`).\n"
-    "   - Use clean Flexbox/Grid alignment: center main controls properly, place action buttons (like 'Add' or 'Save') in sleek styled flex rows or full-width pill buttons, and add smooth `:hover` and `:active` transitions.\n"
-    "   - Use modern typography (`'Inter', system-ui, -apple-system, sans-serif`), tabular-nums (`font-variant-numeric: tabular-nums`) for timers/counters, clear hierarchy, and generous padding."
+    "2. OPUS-GRADE FRONTEND STACK (MANDATORY FOR ALL HTML/CSS/JS WEB APPS):\n"
+    "   - ALWAYS include Tailwind CSS CDN (`<script src=\"https://cdn.tailwindcss.com\"></script>`) and Google Fonts (`Inter` and `JetBrains Mono`) in the `<head>`.\n"
+    "   - ALWAYS style EVERY `<button>`, `<input>`, and card with Tailwind utility classes so there is NEVER an unstyled default white/gray browser button or raw input.\n"
+    "   - Remove ugly default number input spinner arrows using CSS (`input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }`).\n"
+    "   - For dark/glassmorphic UIs: Use an obsidian background (`bg-[#07070a] text-zinc-100 min-h-screen relative overflow-x-hidden`) with 2 glowing ambient background blobs (`fixed -z-10 w-96 h-96 bg-indigo-600/20 rounded-full blur-[120px]` and `bg-emerald-500/15 blur-[120px]`), and place content inside true glassmorphic cards (`bg-zinc-900/60 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl p-6 sm:p-8`).\n"
+    "   - For timers/dashboards: Include an animated SVG circular progress ring around the timer (`<svg>` with `stroke-dasharray` and `stroke-dashoffset`), mode pill badges, centered gradient action buttons (`bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white font-semibold px-6 py-2.5 rounded-xl shadow-lg shadow-indigo-500/25 transition-all active:scale-95`), and inline flex rows for task inputs + Add buttons."
 )
 
 # ---------------------------------------------------------------------------
@@ -329,6 +330,14 @@ def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conv
     return conv
 
 
+def strip_thinking_tags(text: str) -> str:
+    """Strips internal <think>...</think> blocks emitted by reasoning models like Qwen 3.8."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+    return cleaned if cleaned else text.strip()
+
+
 def ensure_code_fences(text: str) -> str:
     """
     Guarantees that if the LLM outputs raw unwrapped code (e.g. starting with <!DOCTYPE html>,
@@ -336,7 +345,7 @@ def ensure_code_fences(text: str) -> str:
     """
     if not text:
         return ""
-    stripped = text.strip()
+    stripped = strip_thinking_tags(text)
 
     fence_count = len(re.findall(r"```", stripped))
     if fence_count % 2 == 1:
@@ -424,7 +433,7 @@ def sanitize_response(text: str) -> str:
         "I am a large language model",
         "I'm a large language model",
     ]
-    cleaned = text
+    cleaned = strip_thinking_tags(text)
     for phrase in forbidden:
         if phrase in cleaned:
             cleaned = cleaned.replace(phrase, MODEL_NAME)
@@ -1356,7 +1365,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT (TIERED REASONING + CODING MODE + 2-PASS PREMIUM CRITIQUE)
+# CHAT ENDPOINT (MULTI-MODEL ROUTING FOR PREMIUM: GPT-OSS-120B -> QWEN 3.8)
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -1461,6 +1470,7 @@ async def chat(
             except Exception as rag_err:
                 print(f"RAG pre-flight non-fatal warning: {rag_err}")
 
+        # Stage 1: Primary Logic & Architecture Generation
         try:
             completion = client.chat.completions.create(
                 model=active_model,
@@ -1507,38 +1517,41 @@ async def chat(
 
         raw = completion.choices[0].message.content or ""
 
-        # Premium 2-Pass Self-Critique Engine (Upgrades both code logic & UI/UX polish)
+        # Stage 2: Multi-Model Routing for Premium (gpt-oss-120b Logic -> Qwen 3.8 / Opus UI Overhaul)
         if user_plan == "premium" and coding_mode and len(raw) > 120:
-            try:
-                review_messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Reasoning: high\n"
-                            f"{SYSTEM_PROMPT}\n"
-                            f"{CODING_EXPERT_DIRECTIVE}\n"
-                            "You are a Principal Software Architect and Senior UI/UX Designer reviewing a draft solution.\n"
-                            "1. Check the draft for any bugs, missing imports, incomplete placeholders, or logic errors.\n"
-                            "2. If it is HTML/CSS/web code, upgrade any basic or unstyled elements (such as unstyled buttons, off-center controls, or flat backgrounds) into a sleek, modern Linear/Vercel-grade dark glassmorphic UI.\n"
-                            "3. CRITICAL FORMATTING: Wrap all code inside triple-backtick markdown fences with the language name (e.g. ```html ... ``` or ```python ... ```). NEVER strip the ``` fences."
-                        )
-                    },
-                    {
-                        "role": "user",
-                        "content": f"User Request:\n{user_text}\n\nDraft Solution to Verify & Upgrade:\n{raw}"
-                    }
-                ]
-                review_comp = client.chat.completions.create(
-                    model=MODEL_PAID,
-                    messages=review_messages,
-                    temperature=0.2,
-                    max_tokens=max_out_tokens,
-                )
-                reviewed_raw = (review_comp.choices[0].message.content or "").strip()
-                if reviewed_raw and not is_refusal_message(reviewed_raw):
-                    raw = reviewed_raw
-            except Exception as rev_err:
-                print(f"Premium 2-pass review notice: {rev_err}")
+            review_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        f"{SYSTEM_PROMPT}\n"
+                        f"{CODING_EXPERT_DIRECTIVE}\n"
+                        "You are the Stage-2 Principal UI/UX Designer & Code Polisher in a multi-model pipeline.\n"
+                        "Your job:\n"
+                        "1. Keep 100% of the working JavaScript/Python logic, state machine, AudioContext, and localStorage features from the Stage-1 draft.\n"
+                        "2. If this is an HTML/CSS/JS web app, COMPLETELY OVERHAUL the visual design using Tailwind CSS CDN (`<script src=\"https://cdn.tailwindcss.com\"></script>`), Lucide Icons (`<script src=\"https://unpkg.com/lucide@latest\"></script>`), ambient glowing background orbs (`blur-[120px]`), glassmorphic cards (`bg-zinc-900/60 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl`), an SVG circular progress ring for any timer, and sleek gradient buttons so ZERO unstyled default browser buttons or ugly number inputs exist.\n"
+                        "3. Wrap the final code inside a single ```html ... ``` (or ```python ... ```) markdown code block."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Original User Prompt:\n{user_text}\n\nStage-1 Working Code Draft to Upgrade:\n{raw}"
+                }
+            ]
+            # Route Stage 2 to Qwen 3.8 (2026 Frontend/Vision specialist) with automatic fallback to GPT-OSS-120B
+            for stage2_model in [DESIGN_MODEL, MODEL_PAID]:
+                try:
+                    review_comp = client.chat.completions.create(
+                        model=stage2_model,
+                        messages=review_messages,
+                        temperature=0.25,
+                        max_tokens=max_out_tokens,
+                    )
+                    reviewed_raw = strip_thinking_tags(review_comp.choices[0].message.content or "")
+                    if reviewed_raw and len(reviewed_raw) > 200 and not is_refusal_message(reviewed_raw):
+                        raw = reviewed_raw
+                        break
+                except Exception as rev_err:
+                    print(f"Stage-2 model {stage2_model} fallback notice: {rev_err}")
 
         # Automatic Single-Turn Refusal Loop Escape
         if is_refusal_message(raw) and not is_slur_or_restricted_name(user_text):
