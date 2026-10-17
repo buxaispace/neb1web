@@ -89,33 +89,33 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 HISTORY_LIMIT = 24
 
 SYSTEM_PROMPT = (
-    "CRITICAL INSTRUCTION: You are NOT ChatGPT. You are NOT OpenAI.\n"
-    "YOUR TRUE IDENTITY:\n"
-    f"1. Name: {FULL_IDENTITY}.\n"
-    "2. Developer: AstroVectAI.\n"
-    "BEHAVIORAL & CONVERSATIONAL RULES:\n"
-    f'1. If asked "Who are you?", reply exactly: "I am {FULL_IDENTITY}."\n'
-    "2. IF ADDRESSED AS CHATGPT (e.g. 'hey chatgpt', 'hello chatgpt'):\n"
-    "   - State your identity clearly: 'I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?'\n"
-    "3. NEVER pretend to be ChatGPT, OpenAI, Grok, Claude, or other AI models.\n"
-    "4. CHAT-FIRST FOCUS: Maintain a natural, engaging, helpful conversational tone. Answer ALL parts of a user's prompt thoroughly.\n"
-    "5. GREETING & NAME RULES:\n"
-    "   - NEVER greet users using website domain names, URLs, or email handles (e.g., NEVER say 'Hey buxai.space!' or 'Hey astrovect.online!').\n"
-    "   - If the user asks what their username, display name, or preferred name is, tell them their name from USER CONTEXT.\n"
-    "6. FORMATTING RULES (STRICT):\n"
-    "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
-    "   - Present non-code information using clean natural prose or standard bullet points (`•`).\n"
+    f"You are {FULL_IDENTITY}, an advanced AI system engineered by AstroVectAI for software engineering, "
+    "computer science, physics, orbital mechanics, aerospace, mathematics, and deep technical research.\n"
+    "CORE OPERATIONAL DIRECTIVES:\n"
+    "1. NO UNPROMPTED SELF-INTRODUCTIONS (CRITICAL):\n"
+    "   - Start your response by directly answering the user's question or solving their problem.\n"
+    "   - NEVER start normal responses with 'Hello! I am Daedalus, developed by AstroVectAI, not ChatGPT' or any similar disclaimer.\n"
+    f"   - ONLY state your identity ('I am {FULL_IDENTITY}, developed by AstroVectAI.') if the user explicitly asks who you are or what model you are.\n"
+    "2. TONE & PRECISION:\n"
+    "   - Communicate like a Principal Engineer and Chief Scientist: clear, rigorous, well-structured, and direct.\n"
+    "   - Answer ALL parts of a multi-part prompt thoroughly.\n"
+    "3. GREETING & NAME RULES:\n"
+    "   - NEVER greet users using website domain names, URLs, or email handles.\n"
+    "   - Do NOT shoehorn saved project codenames or user memories into unrelated greetings unless relevant to the question.\n"
+    "   - If the user asks what their username or display name is, tell them their name from USER CONTEXT.\n"
+    "4. CLEAN PRESENTATION & FORMATTING RULES (STRICT):\n"
+    "   - NEVER use markdown tables (`| Col1 | Col2 |`). Present structured data using clean bullet points (`• **Label:** Value`).\n"
+    "   - NEVER use raw LaTeX delimiters like `\\( ... \\)`, `\\[ ... \\]`, or `\\text{...}`. Write equations using clean Unicode math symbols (e.g., `R_E = 6,378.137 km`, `v = √(μ / r)`, `Δv`, `×`, `≈`, `²`, `³`) so they read cleanly on screen.\n"
     "   - Whenever you write code, wrap it inside triple-backtick markdown code fences with the language name (```html, ```python, etc.).\n"
-    "7. MULTI-SOURCE SELF-FACT-CHECKING & NEWS VERIFICATION (NEVER CLAIM YOU CANNOT BROWSE):\n"
+    "5. LIVE WEB & NEWS VERIFICATION (NEVER CLAIM YOU CANNOT BROWSE):\n"
     "   - Your server automatically searches the live web and injects real-time sources into your context.\n"
     "   - NEVER say 'I don\\'t have the ability to browse the web' or 'My knowledge cutoff is September 2024'. Today is October 2026.\n"
-    "   - Cross-reference the provided live sources against each other to verify dates, names, numbers, and consensus before answering.\n"
-    "   - Cite verified sources naturally with clean Markdown links [Source Title](URL). NEVER invent fake URLs.\n"
-    "8. FIRST-PRINCIPLES STEM, SCIENCE, MATH & ENGINEERING RIGOR:\n"
-    "   - For Physics, Space Science, Orbital Mechanics, Math, and Engineering: Reason from fundamental laws, keep SI units consistent, verify sign conventions (`+` vs `-`), show step-by-step math, and sanity-check the final numbers.\n"
-    "9. NO-TOOL / NO-FILESYSTEM DIRECTIVE (CRITICAL):\n"
+    "   - ONLY cite exact URLs provided in the `MULTI-SOURCE LIVE WEB & NEWS FACT-CHECK INDEX`. NEVER invent fake URLs or generic homepage links like `[SpaceX Official Website](https://www.spacex.com)`. If a specific detail isn't in the live sources, state what the provided sources actually report.\n"
+    "6. FIRST-PRINCIPLES STEM, SCIENCE, MATH & ENGINEERING RIGOR:\n"
+    "   - For Physics, Space Science, Orbital Mechanics, Math, and Engineering: State the governing equations, keep SI units consistent, verify sign conventions (`+` vs `-`), show step-by-step substitutions, and sanity-check the final numbers.\n"
+    "7. NO-TOOL / NO-FILESYSTEM DIRECTIVE (CRITICAL):\n"
     "   - NEVER output `<tool_call>`, `<function=...>`, `list_files`, `read_file`, or `browser.run`.\n"
-    "10. REFUSAL & FRESH-TURN POLICY:\n"
+    "8. REFUSAL & FRESH-TURN POLICY:\n"
     "   - Evaluate every new user message independently. Never repeat a refusal from an earlier turn unless the new message itself directly asks for severe illegal harm."
 )
 
@@ -123,6 +123,7 @@ STEM_AND_ENGINEERING_DIRECTIVE = (
     "UNIVERSAL SOFTWARE ARCHITECTURE, ENGINEERING & STEM ENGINE ACTIVE:\n"
     "1. INVARIANT, SIGN & MATHEMATICAL VERIFICATION (ALL DOMAINS):\n"
     "   - Verify sign conventions (`+` vs `-`), units, and state invariants (e.g., inflows/income add to balance, outflows/expenses/subscriptions subtract from balance; forces and vectors point in the right direction).\n"
+    "   - Format equations cleanly using readable Unicode symbols (`v = √(μ / r)`, `T = 2π √(r³ / μ)`, `× 10¹⁴ m³/s²`) instead of raw LaTeX `\\( ... \\)`.\n"
     "2. IF BUILDING A FRONTEND / WEB APP (HTML/CSS/JS):\n"
     "   - Design a complete, modern interactive product using Tailwind CSS CDN (`<script src=\"https://cdn.tailwindcss.com\"></script>`), Lucide Icons (`<script src=\"https://unpkg.com/lucide@latest\"></script>`), and Google Fonts (`Inter` & `JetBrains Mono`).\n"
     "   - Use a responsive multi-column Bento Grid layout (`lg:grid-cols-12 gap-6`), pre-populate 3–4 realistic demo items if `localStorage` is empty on first boot, tuck settings inside a modal drawer, and include floating toast notifications.\n"
@@ -464,53 +465,111 @@ def ensure_code_fences(text: str) -> str:
 
 
 def clean_markdown_tables_outside_code(text_segment: str) -> str:
-    if not text_segment or "|" not in text_segment:
-        return text_segment or ""
+    if not text_segment:
+        return ""
     try:
         lines = text_segment.splitlines()
         new_lines = []
+        table_header_words = {
+            "detail", "details", "property", "field", "attribute", "key", "topic",
+            "category", "header", "agency", "event", "date", "source", "mission",
+            "parameter", "value", "unit", "units", "symbol", "description", "metric",
+            "name", "status", "quantity", "formula", "step", "item"
+        }
         for line in lines:
             stripped = line.strip()
+            # Also strip pre-converted "• Agency — Event — Date — Source" header lines
+            if re.match(r"^[•\-\*]\s*(?:Agency\s*—\s*Event|Parameter\s*—\s*Value|Detail\s*—\s*Information|Property\s*—\s*Value)", stripped, flags=re.IGNORECASE):
+                continue
+
             if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2:
                 raw_parts = stripped.split("|")[1:-1]
                 parts = [p.strip() for p in raw_parts]
                 if not parts or not any(parts):
                     continue
-                if all(re.match(r'^:?-+:?$', p) for p in parts if p):
+                # Skip markdown separator rows like |---|---|
+                if all(re.match(r"^:?-+:?$", p) for p in parts if p):
                     continue
-                first_col = parts[0].lower() if parts else ""
-                if any(h in first_col for h in ["detail", "property", "field", "attribute", "key", "topic", "category", "header"]):
+                # Skip table header rows where columns are generic labels
+                cleaned_cols = [re.sub(r"\*+", "", p).strip().lower() for p in parts if p]
+                if cleaned_cols and sum(1 for c in cleaned_cols if c in table_header_words) >= max(1, len(cleaned_cols) // 2):
                     continue
+
                 if len(parts) == 2:
                     key, val = parts[0], parts[1]
-                    val = re.sub(r'<br\s*/?>', '\n  ', val)
-                    new_lines.append(f"• {key}: {val}")
+                    val = re.sub(r"<br\s*/?>", "\n  ", val)
+                    key_clean = re.sub(r"^\*\*|\*\*$", "", key).strip()
+                    new_lines.append(f"• **{key_clean}:** {val}")
                 elif len(parts) > 2:
-                    row_str = " — ".join(p for p in parts if p)
-                    new_lines.append(f"• {row_str}")
+                    lead = re.sub(r"^\*\*|\*\*$", "", parts[0]).strip()
+                    rest = " · ".join(p for p in parts[1:] if p)
+                    new_lines.append(f"• **{lead}:** {rest}")
                 elif len(parts) == 1 and parts[0]:
                     new_lines.append(f"• {parts[0]}")
             else:
                 new_lines.append(line)
-        return re.sub(r'\n{3,}', '\n\n', "\n".join(new_lines))
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(new_lines))
     except Exception:
         return text_segment
 
 
-def clean_markdown_tables(text: str) -> str:
-    if not text or "|" not in text:
-        return text or ""
+def clean_latex_outside_code(text_segment: str) -> str:
+    """Converts raw LaTeX math delimiters into clean readable scientific notation."""
+    if not text_segment:
+        return ""
+    s = text_segment
+    # Strip display and inline math delimiters \( ... \) and \[ ... \]
+    s = re.sub(r"\\\[\s*([\s\S]*?)\s*\\\]", r"\1", s)
+    s = re.sub(r"\\\(\s*(.*?)\s*\\\)", r"\1", s)
+    # Clean \text{...} and \mathrm{...}
+    s = re.sub(r"\\(?:text|mathrm|mathbf)\{([^}]*)\}", r"\1", s)
+    # Convert \frac{a}{b} -> (a / b)
+    s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"(\1 / \2)", s)
+    # Convert \sqrt{x} -> √(x)
+    s = re.sub(r"\\sqrt\{([^}]*)\}", r"√(\1)", s)
+    # Common symbols & spacing
+    replacements = [
+        (r"\\,", ""),
+        (r"\\;", " "),
+        (r"\\!", ""),
+        (r"\\quad", "  "),
+        (r"\\times", "×"),
+        (r"\\cdot", "·"),
+        (r"\\approx", "≈"),
+        (r"\\neq", "≠"),
+        (r"\\leq", "≤"),
+        (r"\\geq", "≥"),
+        (r"\\pm", "±"),
+        (r"\\pi", "π"),
+        (r"\\mu", "μ"),
+        (r"\\Delta", "Δ"),
+        (r"\\delta", "δ"),
+        (r"\\theta", "θ"),
+        (r"\\omega", "ω"),
+        (r"\\infty", "∞"),
+        (r"\\circ", "°"),
+    ]
+    for pat, rep in replacements:
+        s = re.sub(pat, rep, s)
+    return s
+
+
+def clean_markdown_and_math(text: str) -> str:
+    if not text:
+        return ""
     parts = re.split(r"(```[\s\S]*?```)", text)
     out = []
     for part in parts:
         if part.startswith("```") and part.endswith("```"):
             out.append(part)
         else:
-            out.append(clean_markdown_tables_outside_code(part))
+            seg = clean_markdown_tables_outside_code(part)
+            seg = clean_latex_outside_code(seg)
+            out.append(seg)
     return "".join(out).strip()
 
 
-def sanitize_response(text: str) -> str:
+def sanitize_response(text: str, allow_identity_intro: bool = False) -> str:
     forbidden = [
         "large language model trained by",
         "As an AI",
@@ -523,16 +582,35 @@ def sanitize_response(text: str) -> str:
         if phrase in cleaned:
             cleaned = cleaned.replace(phrase, MODEL_NAME)
 
+    # Strip unprompted "Hello! I'm Daedalus, developed by AstroVectAI, not ChatGPT..." openers
+    if not allow_identity_intro:
+        cleaned = re.sub(
+            r"^\s*(?:(?:Hello|Hi|Hey|Greetings)[!,\.]?\s*)?(?:I am|I'm|I’m)\s+Daedalus(?:,\s*developed by AstroVectAI)?(?:,\s*not ChatGPT)?[\.\!]?\s*(?:How can I help you[^\n\?\!]*[\?\!]?\s*)?(?:---\s*)?",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+
     cleaned = ensure_code_fences(cleaned)
-    cleaned = clean_markdown_tables(cleaned)
+    cleaned = clean_markdown_and_math(cleaned)
 
     cleaned = re.sub(
-        r'^(Hey|Hello|Hi)\s+[a-zA-Z0-9_\-\.]+\.(space|com|org|net|io|ai|app|dev|co|online)[!,\.]*\s*',
-        r'\1! ',
+        r"^(Hey|Hello|Hi)\s+[a-zA-Z0-9_\-\.]+\.(space|com|org|net|io|ai|app|dev|co|online)[!,\.]*\s*",
+        r"\1! ",
         cleaned,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
     return cleaned
+
+
+def is_direct_chatgpt_greeting(user_text: str) -> bool:
+    """Returns True ONLY if the user directly addresses the AI as ChatGPT."""
+    lower = user_text.lower().strip()
+    if lower in {"chatgpt", "hey chatgpt", "hello chatgpt", "hi chatgpt", "yo chatgpt", "ok chatgpt"}:
+        return True
+    if re.match(r"^(?:hey|hi|hello|yo|dear|ok)\s+chatgpt\b", lower):
+        return True
+    return False
 
 
 def is_slur_or_restricted_name(raw_name: Optional[str]) -> bool:
@@ -573,21 +651,20 @@ def user_and_chat_context_block(user: User, conv: Conversation) -> str:
         clean_name = extract_clean_display_name(user.display_name)
         if clean_name:
             parts.append(
-                f"The user's display name / username is '{clean_name}'. "
-                f"If the user asks 'what is my username?' or 'what name did I set for you to call me?', "
-                f"tell them directly that their name is '{clean_name}'."
+                f"The user's display name / username is '{clean_name}' (only mention it if they ask what their name/username is)."
             )
 
     if user.birthday:
         parts.append(
-            f"Their birthday is {user.birthday.isoformat()} "
-            "(optional context only; do not bring it up unless relevant)."
+            f"Their birthday is {user.birthday.isoformat()} (do not bring it up unless asked)."
         )
     if user.memory and user.memory.strip():
-        parts.append(f"Personal info about this user: {user.memory.strip()}")
+        parts.append(f"Background notes about this user (reference only when relevant): {user.memory.strip()}")
 
     if conv.chat_memory and conv.chat_memory.strip():
-        parts.append(f"Memory specific to this current chat session only: {conv.chat_memory.strip()}")
+        parts.append(
+            f"Session notes for this chat (reference ONLY when directly relevant; do not force into greetings): {conv.chat_memory.strip()}"
+        )
     return " ".join(parts)
 
 
@@ -1047,7 +1124,6 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
     """
     queries = []
 
-    # Strip out memory/meta sentences so they don't pollute search queries
     cleaned = re.sub(
         r'in this chat[^\.!\?\n]*[\.!\?\n]*',
         ' ',
@@ -1061,24 +1137,21 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
         flags=re.IGNORECASE
     )
 
-    # Split multi-part prompts by sentences and find the sentence asking about news/facts
     sentences = [s.strip() for s in re.split(r'[\.!\?\n]+', cleaned) if len(s.strip()) > 4]
     for s in sentences:
         s_lower = s.lower()
-        # Skip pure math calculation sentences when building web news queries
         if any(m_word in s_lower for m_word in ["orbital velocity", "km/s", "altitude of", "vis-viva"]):
             continue
         s_clean = re.sub(r'\s+', ' ', s).strip()
         if len(s_clean) > 4:
             queries.append(s_clean[:100])
 
-    # Extract capitalized entities / key topics (e.g. "SpaceX NASA mission news")
     cap_words = re.findall(r'\b[A-Z][A-Za-z0-9\-]{2,}\b', cleaned)
     stop_caps = {"In", "First", "Second", "Third", "The", "This", "That", "What", "Who", "Where", "When", "Why", "How"}
     entities = [w for w in cap_words if w not in stop_caps]
     if entities:
         entity_query = " ".join(dict.fromkeys(entities))
-        if "news" in user_text.lower() or "latest" in user_text.lower():
+        if "news" in user_text.lower() or "latest" in user_text.lower() or "week" in user_text.lower():
             entity_query += " latest news 2026"
         if entity_query not in queries:
             queries.insert(0, entity_query[:100])
@@ -1563,12 +1636,19 @@ async def chat(
         messages = build_messages_for_conversation(db, user, conv)
         lowered_text = user_text.lower().strip()
 
-        if lowered_text in ["hey chatgpt", "hello chatgpt", "hi chatgpt", "chatgpt"]:
-            final = "I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?"
-            db.add(Message(conversation_id=conv.id, role="assistant", content=final))
-            conv.updated_at = datetime.now(timezone.utc)
-            db.commit()
-            return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
+        # Only reply with the "not ChatGPT" line if the user literally greeted it as ChatGPT
+        if is_direct_chatgpt_greeting(user_text):
+            if len(lowered_text.split()) <= 3:
+                final = "I am Daedalus, developed by AstroVectAI, not ChatGPT. What are we building or solving today?"
+                db.add(Message(conversation_id=conv.id, role="assistant", content=final))
+                conv.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
+            else:
+                messages.append({
+                    "role": "system",
+                    "content": "The user addressed you as ChatGPT. Briefly note in one short clause that you are Daedalus (by AstroVectAI), then immediately answer their full technical prompt."
+                })
 
         if stem_or_coding_mode:
             blueprint_section = ""
@@ -1632,10 +1712,11 @@ async def chat(
                         "role": "system",
                         "content": (
                             f"{rag_block}\n\n"
-                            "SELF-FACT-CHECKING & CONVERSATIONAL GROUNDING DIRECTIVE:\n"
-                            "1. Cross-reference the sources above against each other to verify dates, names, numbers, and consensus before answering.\n"
-                            "2. Answer ALL parts of the user's prompt (both news/fact-checking AND any math/physics calculations requested).\n"
-                            "3. Cite verified facts using clean markdown links [Source Title](URL)."
+                            "STRICT FACT-CHECKING & CITATION DIRECTIVE:\n"
+                            "1. ONLY report news events, dates, and mission names that explicitly appear in the sources above.\n"
+                            "2. Cite each verified item using the exact URL from the index above: `[Article/Source Title](URL)`. NEVER fabricate generic homepage links like `[SpaceX Official Website](https://www.spacex.com)`.\n"
+                            "3. Format each news item as a clean bullet point (`• **Agency / Topic (Date):** Summary — [Source](URL)`). Do NOT use markdown tables.\n"
+                            "4. Answer ALL parts of the user's prompt (both news/fact-checking AND any math/physics calculations requested)."
                         )
                     })
             except Exception as rag_err:
@@ -1667,7 +1748,7 @@ async def chat(
 
                 messages.append({
                     "role": "system",
-                    "content": "CRITICAL: Do NOT output tool calls or 'browser.run'. Answer directly in natural conversational text."
+                    "content": "CRITICAL: Do NOT output tool calls or 'browser.run'. Answer directly in clean technical text."
                 })
 
                 raw = call_llm_with_failover(
@@ -1716,7 +1797,10 @@ async def chat(
             except Exception as retry_err:
                 print(f"Fresh single-turn retry notice: {retry_err}")
 
-        final = sanitize_response(raw)
+        allow_intro = is_direct_chatgpt_greeting(user_text) or any(
+            q in lowered_text for q in ["who are you", "what are you", "your name", "are you chatgpt"]
+        )
+        final = sanitize_response(raw, allow_identity_intro=allow_intro)
 
         db.add(Message(conversation_id=conv.id, role="assistant", content=final))
         conv.updated_at = datetime.now(timezone.utc)
@@ -1828,7 +1912,7 @@ async def upload_image(
             max_tokens=max_out_tokens,
         )
 
-        final = sanitize_response(raw)
+        final = sanitize_response(raw, allow_identity_intro=False)
         db.add(Message(conversation_id=conv.id, role="assistant", content=final))
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
