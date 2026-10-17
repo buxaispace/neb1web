@@ -97,7 +97,7 @@ MODEL_FREE = "openai/gpt-oss-20b"
 MODEL_PAID = "openai/gpt-oss-120b"
 VISION_MODEL = "qwen/qwen3.8-27b"
 MAX_FILE_SIZE = 20 * 1024 * 1024
-HISTORY_LIMIT = 60
+HISTORY_LIMIT = 24
 
 SYSTEM_PROMPT = (
     "CRITICAL INSTRUCTION: You are NOT ChatGPT. You are NOT OpenAI.\n"
@@ -140,38 +140,105 @@ SYSTEM_PROMPT = (
 
 CODING_EXPERT_DIRECTIVE = (
     "PRINCIPAL SOFTWARE ENGINEER & CLAUDE OPUS / VERCEL v0 UI ARCHITECT MODE ACTIVE:\n"
-    "When building HTML/CSS/JS web apps or interfaces, you MUST apply all 4 of these flagship product patterns:\n"
+    "When building HTML/CSS/JS web apps or interfaces, you MUST apply all 5 of these flagship product patterns:\n"
     "1. 12-COLUMN BENTO-GRID DASHBOARD LAYOUT (NEVER A NARROW SINGLE COLUMN):\n"
     "   - Use a wide responsive container (`max-w-6xl w-full mx-auto p-4 sm:p-8`) with a top glassmorphic navigation header (app logo/title, live status pill, quick stats, and a Settings Gear button) and a 2-column Bento Grid (`grid grid-cols-1 lg:grid-cols-12 gap-6`).\n"
-    "   - Left Column (`lg:col-span-5`): Hero interactive widget (e.g. large animated SVG circular progress ring `<svg>` with glowing `drop-shadow` and `stroke-dashoffset` transitions, clickable segmented mode pills, primary gradient controls, `<kbd>` keyboard shortcut hints, and a 3-card mini analytics row showing Completed, Focus Mins, and Streak).\n"
-    "   - Right Column (`lg:col-span-7`): Full interactive workspace (e.g. task completion progress bar, filter tabs `All | Active | Done`, priority selector `High | Med | Low`, inline input + gradient Add button row, and rich item cards with priority badges and hover actions).\n"
+    "   - Left Column (`lg:col-span-5`): Hero interactive widget (e.g. large animated SVG circular progress ring `<svg>` with glowing `drop-shadow` and `stroke-dashoffset` transitions, clickable segmented mode pills, primary gradient controls, `<kbd>` keyboard shortcut hints, and a 3-card mini analytics row).\n"
+    "   - Right Column (`lg:col-span-7`): Full interactive workspace (e.g. progress bar, filter tabs `All | Active | Done`, priority/type selector, inline input + gradient Add button row, and rich item cards).\n"
     "2. PRE-POPULATED REALISTIC DEMO DATA ON FIRST BOOT:\n"
-    "   - Never show a blank/empty list on first load! If `localStorage` is empty on first boot, automatically seed 3–4 realistic sample items (with varied High/Med/Low priority badges and 1 already marked completed) so the app looks alive and immediately testable.\n"
+    "   - Never show a blank/empty list on first load! If `localStorage` is empty on first boot, automatically seed 3–4 realistic sample items so the app looks alive and immediately testable.\n"
     "3. FLOATING TOAST NOTIFICATIONS & KEYBOARD SHORTCUTS:\n"
-    "   - Build a sleek floating Toast Notification system in the bottom-right corner (`fixed bottom-5 right-5 z-50`) that slides in when actions occur (e.g. 'Settings saved', 'Session started', 'Task added').\n"
-    "   - Include working keyboard shortcuts (e.g. `Space` to start/pause when not typing in an input, `R` to reset, `Enter` to add) and display subtle `<kbd class=\"px-1.5 py-0.5 text-xs bg-white/10 rounded border border-white/15\">Space</kbd>` hints.\n"
+    "   - Build a sleek floating Toast Notification system in the bottom-right corner (`fixed bottom-5 right-5 z-50`) that slides in when actions occur.\n"
+    "   - Include working keyboard shortcuts (`Space`, `R`, `Enter`) with subtle `<kbd>` hints.\n"
     "4. SETTINGS TUCKED IN A SLEEK MODAL (NO RAW INPUT CLUTTER ON MAIN SCREEN):\n"
-    "   - Never dump raw configuration/interval number inputs on the main screen. Put a Settings button (`<i data-lucide=\"settings\"></i>`) in the top header that opens a backdrop-blurred modal popup (`fixed inset-0 bg-black/70 backdrop-blur-md z-50`) to edit intervals, volume, or preferences.\n"
-    "5. MANDATORY TECH STACK & CODE FENCING:\n"
+    "   - Put a Settings button (`<i data-lucide=\"settings\"></i>`) in the top header that opens a backdrop-blurred modal popup (`fixed inset-0 bg-black/70 backdrop-blur-md z-50`) to edit intervals, budget limits, or preferences.\n"
+    "5. STRICT MATH & BUSINESS LOGIC ACCURACY:\n"
+    "   - Double-check all `.reduce()` and state calculations! In finance/budget apps, strictly separate `type === 'income'` (adds to balance) from `type === 'expense'` and `type === 'subscription'` (both subtract from balance and count toward Monthly Spend: `Balance = TotalIncome - TotalExpenses - TotalSubscriptions`). Never add expenses or subscriptions as income!\n"
     "   - Load Tailwind CSS CDN (`<script src=\"https://cdn.tailwindcss.com\"></script>`), Lucide Icons (`<script src=\"https://unpkg.com/lucide@latest\"></script>`), and Google Fonts (`Inter` and `JetBrains Mono`).\n"
-    "   - Call `if (window.lucide) lucide.createIcons();` after any DOM render.\n"
     "   - Write 100% complete, runnable code with ZERO placeholders (`// TODO` is forbidden), wrapped inside a single ```html ... ``` (or ```python ... ```) markdown code block."
 )
 
 # ---------------------------------------------------------------------------
-# Multi-Key Groq + OpenRouter Failover Caller
+# Multi-Key Groq + OpenRouter Failover + Automatic 413 TPM Compaction
 # ---------------------------------------------------------------------------
+def compact_messages_for_tpm(messages: List[dict]) -> List[dict]:
+    """
+    If a conversation exceeds Groq's 8,000 TPM free-tier ceiling (HTTP 413),
+    trims older turns and compacts large historical messages so the request fits under 8,000 TPM.
+    """
+    if len(messages) <= 2:
+        return messages
+
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    chat_msgs = [m for m in messages if m.get("role") in ("user", "assistant")]
+
+    # Keep only the primary system prompt (trimmed if needed) + last 2 chat messages
+    primary_sys = system_msgs[0].copy() if system_msgs else {"role": "system", "content": SYSTEM_PROMPT}
+    if len(system_msgs) > 1:
+        # Append coding directive concisely
+        extra_sys = "\n\n".join(m["content"][:1200] for m in system_msgs[1:])
+        primary_sys["content"] = primary_sys["content"] + "\n\n" + extra_sys
+
+    recent_chat = []
+    for m in chat_msgs[-2:]:
+        c = m["content"]
+        # If the previous assistant message is a huge code block, keep up to 11,000 chars (~2,700 tokens)
+        if len(c) > 11000:
+            c = c[:11000] + "\n... [truncated for token limit]"
+        recent_chat.append({"role": m["role"], "content": c})
+
+    return [primary_sys] + recent_chat
+
+
+def call_external_openrouter(model: str, messages: List[dict], temperature: float) -> Optional[str]:
+    if not OPENROUTER_API_KEY:
+        return None
+    # Try the :free variant first, then standard model name on OpenRouter
+    candidates = [f"{model}:free" if not model.endswith(":free") else model, model]
+    for or_model in candidates:
+        try:
+            with httpx.Client(timeout=75.0) as http:
+                r = http.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": APP_URL or "https://astrovect.online",
+                        "X-Title": "Daedalus AI",
+                    },
+                    json={
+                        "model": or_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                    },
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content")
+                    if content:
+                        return content
+                else:
+                    print(f"OpenRouter ({or_model}) status {r.status_code}: {r.text[:200]}")
+        except Exception as or_err:
+            print(f"OpenRouter failover notice ({or_model}): {or_err}")
+    return None
+
+
 def call_llm_with_failover(
     model: str,
     messages: List[dict],
     temperature: float = 0.3,
-    max_tokens: int = 8192,
+    max_tokens: int = 6000,
 ) -> str:
     """
-    Tries all configured GROQ_API_KEYs in order. If all Groq keys hit a 429 rate limit
-    and OPENROUTER_API_KEY is set, automatically fails over to OpenRouter's free endpoint.
+    1. Tries all configured GROQ_API_KEYs in order.
+    2. If Groq throws 413 (TPM Request Too Large) or 429 (Rate Limit):
+       - First tries OpenRouter (if OPENROUTER_API_KEY is configured, since OpenRouter has a 65k+ token window).
+       - Next, automatically compacts the message history to fit under Groq's 8,000 TPM ceiling and retries on Groq!
     """
     last_err = None
+    hit_tpm_or_rate_limit = False
+
     for idx, g_client in enumerate(groq_clients):
         try:
             comp = g_client.chat.completions.create(
@@ -184,35 +251,48 @@ def call_llm_with_failover(
         except Exception as e:
             last_err = e
             err_str = str(e).lower()
-            if "429" in err_str or "rate_limit" in err_str or "quota" in err_str or "tokens per" in err_str:
-                print(f"Groq key #{idx + 1} hit rate limit, failing over...")
+            if any(k in err_str for k in ["413", "429", "rate_limit", "too large", "tokens per minute", "tpm", "quota"]):
+                hit_tpm_or_rate_limit = True
+                print(f"Groq key #{idx + 1} hit TPM/rate limit ({e}), attempting failover/compaction...")
                 continue
             else:
                 raise e
 
-    # Optional OpenRouter Free Failover if all Groq keys are rate-limited
+    # Step 2: If OpenRouter is configured, route overflow request to OpenRouter's large context window
     if OPENROUTER_API_KEY:
-        try:
-            or_model = f"{model}:free" if not model.endswith(":free") else model
-            with httpx.Client(timeout=60.0) as http:
-                r = http.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": or_model,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    },
+        or_reply = call_external_openrouter(model, messages, temperature)
+        if or_reply:
+            return or_reply
+
+    # Step 3: Automatic 413 / TPM History Compaction & Retry on Groq (Zero external keys needed!)
+    if hit_tpm_or_rate_limit and groq_clients:
+        compacted_msgs = compact_messages_for_tpm(messages)
+        for idx, g_client in enumerate(groq_clients):
+            try:
+                comp = g_client.chat.completions.create(
+                    model=model,
+                    messages=compacted_msgs,
+                    temperature=temperature,
+                    max_tokens=min(max_tokens, 4096),
                 )
-                if r.status_code == 200:
-                    data = r.json()
-                    return data["choices"][0]["message"]["content"] or ""
-        except Exception as or_err:
-            print(f"OpenRouter failover notice: {or_err}")
+                return comp.choices[0].message.content or ""
+            except Exception as retry_e:
+                last_err = retry_e
+                continue
+
+        # Step 4: Final fallback — if 20b bucket is full, try 120b bucket (or vice versa, since Groq tracks TPM per-model!)
+        alt_model = MODEL_PAID if model == MODEL_FREE else MODEL_FREE
+        for g_client in groq_clients:
+            try:
+                comp = g_client.chat.completions.create(
+                    model=alt_model,
+                    messages=compacted_msgs,
+                    temperature=temperature,
+                    max_tokens=4096,
+                )
+                return comp.choices[0].message.content or ""
+            except Exception:
+                continue
 
     if last_err:
         raise last_err
@@ -354,7 +434,7 @@ def require_verified(user: User) -> None:
 
 
 # ---------------------------------------------------------------------------
-# TIER CAPABILITIES & UN-THROTTLED TOKEN BUDGETS
+# TIER CAPABILITIES & TOKEN BUDGETS
 # ---------------------------------------------------------------------------
 def resolve_model_for_user(plan: str, requested_model: Optional[str] = None) -> str:
     user_plan = (plan or "free").lower()
@@ -386,15 +466,11 @@ def get_reasoning_effort_for_plan(plan: str) -> str:
 
 
 def get_max_tokens_for_plan(plan: str, is_coding: bool = False) -> int:
-    """
-    Un-throttles output tokens on Plus (16,384) and Premium (32,768) so internal
-    chain-of-thought reasoning never starves large 600-line single-file web apps.
-    """
     user_plan = (plan or "free").lower()
     if user_plan == "premium":
-        return 32768 if is_coding else 16384
-    if user_plan == "plus":
         return 16384 if is_coding else 8192
+    if user_plan == "plus":
+        return 12288 if is_coding else 6144
     return 4096
 
 
@@ -424,10 +500,6 @@ def strip_thinking_and_tool_tags(text: str) -> str:
 
 
 def ensure_code_fences(text: str) -> str:
-    """
-    Guarantees that if the LLM outputs raw unwrapped code (e.g. starting with <!DOCTYPE html>,
-    <html>, import, def, etc.) or leaves a ``` fence unclosed, it is properly wrapped in ``` fences.
-    """
     if not text:
         return ""
     stripped = strip_thinking_and_tool_tags(text)
@@ -552,7 +624,7 @@ def extract_clean_display_name(raw_name: Optional[str]) -> Optional[str]:
     if not raw_name:
         return None
     name = raw_name.strip()
-    if any(suffix in name.lower() for suffix in [".space", ".com", ".org", ".net", ".io", ".ai", ".app", ".dev", ".co"]):
+    if any(suffix in name.lower() for suffix in [".space", ".com", ".org", ".net", ".io", ".ai", ".app", ".dev", ".co", ".online"]):
         return None
     if "@" in name or "/" in name:
         return None
@@ -641,8 +713,14 @@ def build_messages_for_conversation(db: Session, user: User, conversation_id: in
         cleaned_rows.append(m)
         i += 1
 
-    for m in cleaned_rows:
-        history.append({"role": m.role, "content": m.content})
+    # Keep the most recent assistant message in full (for code edits), but trim older giant code blocks so we don't trip Groq's 8,000 TPM limit
+    total_rows = len(cleaned_rows)
+    for idx, m in enumerate(cleaned_rows):
+        content = m.content
+        is_recent_turn = idx >= (total_rows - 2)
+        if not is_recent_turn and len(content) > 2500:
+            content = content[:2500] + "\n... [earlier code omitted to save context window]"
+        history.append({"role": m.role, "content": content})
     return history
 
 
@@ -663,11 +741,17 @@ def is_coding_or_logic_query(text: str) -> bool:
     return any(k in lower for k in coding_keywords)
 
 
+def is_followup_code_edit(messages: List[dict], user_text: str) -> bool:
+    """Returns True if the conversation already contains generated code and the user is asking for a fix/update."""
+    for m in messages[:-1]:
+        if m.get("role") == "assistant" and ("```" in m.get("content", "") or "<!DOCTYPE html>" in m.get("content", "")):
+            return True
+    return False
+
+
 def generate_product_ux_blueprint(user_text: str) -> Optional[str]:
     """
-    Stage 1 of the Flipped Pipeline:
-    Uses Reasoning: low + max_tokens=2048 so internal thinking tokens never truncate the blueprint.
-    Expands a brief coding/UI prompt into a comprehensive Claude-Opus-level Product & UX Specification.
+    Stage 1 of the Flipped Pipeline (Only runs on brand-new app builds, skipped on follow-up bug fixes).
     """
     try:
         spec_prompt = [
@@ -677,11 +761,11 @@ def generate_product_ux_blueprint(user_text: str) -> Optional[str]:
                     "Reasoning: low\n"
                     "You are a Principal Product Manager & Staff UI/UX Architect at Linear/Vercel.\n"
                     "The user is asking for a software application or UI.\n"
-                    "Output a concise, high-density Product & Interactive UX Blueprint (under 250 words) that expands their request into a 10/10 real-world application incorporating these 4 mandatory pillars:\n"
-                    "1. 12-COLUMN BENTO-GRID LAYOUT: Specify a top glassmorphic nav bar (with app branding, status badge, and Settings Gear button) + a 2-column Bento Grid (`lg:grid-cols-12 gap-6`) where the hero widget & 3 mini analytics cards sit on the left (`lg:col-span-5`) and the interactive workspace sits on the right (`lg:col-span-7`).\n"
-                    "2. PRE-POPULATED DEMO DATA: Specify 3–4 realistic default sample items (with High/Med/Low priority badges and 1 completed item) that load automatically when `localStorage` is empty.\n"
-                    "3. TOAST NOTIFICATIONS & KEYBOARD SHORTCUTS: Specify a bottom-right floating toast notification (`showToast()`) and keyboard shortcuts (`Space`, `R`, `Enter`) with `<kbd>` visual hints.\n"
-                    "4. SETTINGS MODAL & SVG VISUALS: Specify a backdrop-blurred Settings Modal triggered by the top-right gear icon (no raw config inputs cluttering the main page) and an animated SVG circular progress ring.\n"
+                    "Output a concise, high-density Product & Interactive UX Blueprint (under 220 words) that expands their request into a 10/10 real-world application incorporating these 4 mandatory pillars:\n"
+                    "1. 12-COLUMN BENTO-GRID LAYOUT: Top glassmorphic nav bar + 2-column Bento Grid (`lg:grid-cols-12 gap-6`).\n"
+                    "2. PRE-POPULATED DEMO DATA: 3–4 realistic default sample items loaded when `localStorage` is empty.\n"
+                    "3. TOAST NOTIFICATIONS & KEYBOARD SHORTCUTS: Bottom-right floating toast notification (`showToast()`) and `<kbd>` hints.\n"
+                    "4. SETTINGS MODAL & ACCURATE MATH: Settings modal triggered by top-right gear icon, and strictly accurate math (e.g. Income adds to balance; Expenses & Subscriptions subtract from balance).\n"
                     "Output ONLY the blueprint bullet points—no code yet."
                 )
             },
@@ -691,7 +775,7 @@ def generate_product_ux_blueprint(user_text: str) -> Optional[str]:
             model=MODEL_PAID,
             messages=spec_prompt,
             temperature=0.2,
-            max_tokens=2048,
+            max_tokens=1500,
         )
         return strip_thinking_and_tool_tags(blueprint)
     except Exception as e:
@@ -1025,35 +1109,7 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
         queries.append(f"{cleaned} tiktok meme")
         queries.append(f"{cleaned} reddit drama")
 
-    if (client or OPENROUTER_API_KEY) and len(user_turns) >= 1:
-        try:
-            history_snips = [f"{m['role']}: {m['content'][:120]}" for m in messages[-4:] if m.get("role") in ("user", "assistant")]
-            exp_prompt = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Reasoning: low\n"
-                        "You are an expert search query formulation engine. Given the user dialogue, output 2 specific 3-to-5-word "
-                        "search queries that will locate the exact content creator discussion, technical docs, or news story being asked about. "
-                        "Output each query on a new line with no quotes or numbers."
-                    )
-                },
-                {"role": "user", "content": "Context:\n" + "\n".join(history_snips) + f"\nLatest: {user_text}"}
-            ]
-            raw_exp = call_llm_with_failover(
-                model=MODEL_FREE,
-                messages=exp_prompt,
-                temperature=0.1,
-                max_tokens=256,
-            )
-            for line in raw_exp.splitlines():
-                clean_line = line.strip().strip('"').strip("'")
-                if clean_line and clean_line not in queries:
-                    queries.append(clean_line)
-        except Exception:
-            pass
-
-    return queries[:3] if queries else [user_text]
+    return queries[:2] if queries else [user_text]
 
 
 async def query_reddit_search(query: str) -> List[Dict[str, str]]:
@@ -1487,7 +1543,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT (PRODUCT ARCHITECT SPEC -> UN-THROTTLED 16K/32K MASTER BUILDER)
+# CHAT ENDPOINT (SMART BLUEPRINT SKIP ON EDITS + 413 TPM PROTECTION)
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -1535,10 +1591,10 @@ async def chat(
             db.commit()
             return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
 
-        # Stage 1 for Plus & Premium Coding: Generate Claude-Opus Product & UX Blueprint
+        # Stage 1 for Plus & Premium Coding: Only run Product Blueprint on brand-new builds (skip on follow-up edits to save TPM!)
         if coding_mode:
             blueprint_section = ""
-            if user_plan in ("plus", "premium"):
+            if user_plan in ("plus", "premium") and not is_followup_code_edit(messages, user_text):
                 ux_blueprint = generate_product_ux_blueprint(user_text)
                 if ux_blueprint:
                     blueprint_section = (
@@ -1604,7 +1660,7 @@ async def chat(
             except Exception as rag_err:
                 print(f"RAG pre-flight non-fatal warning: {rag_err}")
 
-        # Stage 2: Master Builder Generation (with Multi-Key & OpenRouter Failover)
+        # Stage 2: Master Builder Generation (with Multi-Key, OpenRouter, & 413 Compaction Failover)
         try:
             raw = call_llm_with_failover(
                 model=active_model,
