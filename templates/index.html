@@ -191,9 +191,27 @@
     .msg.user .role { color: var(--user); }
     .msg.ai .role { color: var(--ai); }
     .msg.system .role { color: var(--green); font-style: italic; }
-    .msg .body { line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: #e4e4e7; }
-    .msg.ai .body { color: #a1a1aa; }
+    .msg .body { line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: #e4e4e7; }
+    .msg.ai .body { color: #d4d4d8; }
     .msg .sep { margin-top: 14px; border: none; border-top: 1px solid var(--border); opacity: 0.6; }
+
+    /* Interactive Clickable Links & Formatting */
+    .chat-link {
+      color: var(--accent-hover);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      word-break: break-all;
+      font-weight: 500;
+      transition: color 0.15s ease;
+      cursor: pointer;
+    }
+    .chat-link:hover {
+      color: #c7d2fe;
+    }
+    .msg strong {
+      color: #fff;
+      font-weight: 600;
+    }
 
     #input-bar { background: var(--bg); padding: 12px 16px 16px; border-top: 1px solid var(--border); flex-shrink: 0; }
     .preview {
@@ -423,6 +441,37 @@
     searchDeviceAndAdaptLayout();
 
     // -------------------------------------------------------------
+    // Clickable Link & Markdown Formatter
+    // -------------------------------------------------------------
+    function escapeHtml(str) {
+      return (str || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function formatLinksAndMarkdown(text) {
+      let escaped = escapeHtml(text);
+
+      // Convert Markdown Links: [Title](URL) -> Clickable <a> tag
+      escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g, function(match, title, url) {
+        return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + title + ' ↗</a>';
+      });
+
+      // Convert remaining bare URLs (not already part of an <a> tag)
+      escaped = escaped.replace(/(^|[\s\n(])(https?:\/\/[^\s<)]+)/g, function(match, prefix, url) {
+        return prefix + '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + url + ' ↗</a>';
+      });
+
+      // Convert **bold** to <strong>
+      escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+      return escaped;
+    }
+
+    // -------------------------------------------------------------
     // DOM Elements & State
     // -------------------------------------------------------------
     const authScreen = document.getElementById("auth-screen");
@@ -519,19 +568,16 @@
         tab120b.textContent = "120b";
         tab120b.title = "Switch to gpt-oss-120b";
         
-        // Restore user choice if paid, default to 120b if not chosen
         if (!selectedModel || selectedModel === "gpt-oss-20b") {
           selectedModel = localStorage.getItem("daedalus_selected_model") || "gpt-oss-120b";
         }
       } else {
-        // Free user locked to 20b
         selectedModel = "gpt-oss-20b";
         tab120b.classList.add("locked");
         tab120b.textContent = "120b 🔒";
         tab120b.title = "gpt-oss-120b requires Plus or Premium. Click to upgrade.";
       }
 
-      // Update active tab styles
       if (selectedModel === "gpt-oss-120b" && canSwitchModels) {
         tab120b.classList.add("active");
         tab20b.classList.remove("active");
@@ -547,7 +593,6 @@
       btnFree.textContent = userPlan === "free" ? "Current plan" : "Included at free";
     }
 
-    // Model Tab Click Handlers
     tab20b.addEventListener("click", function () {
       selectedModel = "gpt-oss-20b";
       localStorage.setItem("daedalus_selected_model", selectedModel);
@@ -572,10 +617,14 @@
       div.className = "msg " + role;
       const roleLabel = role === "user" ? "You" : role === "ai" ? "Daedalus" : "System";
       div.innerHTML = '<div class="role">' + roleLabel + '</div><div class="body"></div>' + (role === "ai" ? '<hr class="sep" />' : "");
-      div.querySelector(".body").textContent = text;
+      
+      // Render text with clickable links
+      div.querySelector(".body").innerHTML = formatLinksAndMarkdown(text);
+      
       chatEl.appendChild(div);
       chatEl.scrollTop = chatEl.scrollHeight;
     }
+
     function showTyping() {
       const div = document.createElement("div");
       div.className = "msg ai"; div.id = "typing";
