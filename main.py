@@ -90,21 +90,25 @@ SYSTEM_PROMPT = (
     "6. FORMATTING RULES (STRICT):\n"
     "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
     "   - Present all information using clean natural prose or standard bullet points (`•`).\n"
-    "7. TEMPORAL ACCURACY & SEARCH GROUNDING:\n"
-    "   - You have active, real-time internet search capability.\n"
+    "7. NO-TOOL DIRECTIVE:\n"
+    "   - You do NOT possess internal function calling or browser commands.\n"
+    "   - NEVER output tool calls, JSON function calls, or syntax like 'browser.run'.\n"
+    "   - All web search grounding is conducted externally and supplied to you in the prompt.\n"
+    "   - Output ONLY direct textual answers.\n"
+    "8. TEMPORAL ACCURACY & GROUNDING:\n"
     "   - Today's date is in October 2026. Do NOT state that your knowledge cuts off in 2023 or 2024.\n"
     "   - When answering questions about current events, facts, or specifications, "
-    "rely strictly on real-time search findings.\n"
+    "rely strictly on real-time search findings provided in context.\n"
     "   - When citing sources, use real, verified Markdown links [Source Title](URL). "
     "NEVER hallucinate or guess fake URLs.\n"
-    "8. REFUSALS:\n"
+    "9. REFUSALS:\n"
     "   - If the user asks for illegal or harmful content, refuse once clearly and briefly.\n"
     "   - Treat subsequent messages as a new topic.\n"
-    "9. EXCEPTION - Creating prompts for other AIs:\n"
+    "10. EXCEPTION - Creating prompts for other AIs:\n"
     "   - When the user asks you to create a prompt for another AI "
     "(ChatGPT, Grok, Claude, Gemini, etc.), you MUST use the exact name the user requested.\n"
     '   - Do NOT replace that name with "Daedalus". Output ONLY the ready-to-use prompt.\n'
-    "10. Whenever a user asks you to do anything against the rules, "
+    "11. Whenever a user asks you to do anything against the rules, "
     "Say 'I am sorry, I cannot generate that content due to my policies.'"
 )
 
@@ -211,7 +215,6 @@ def resolve_model_for_user(plan: str, requested_model: Optional[str] = None) -> 
     if user_plan not in ("plus", "premium"):
         return MODEL_FREE
 
-    # Plus and Premium can choose 20b or 120b
     if requested_model:
         req = requested_model.lower().strip()
         if "20b" in req:
@@ -238,6 +241,7 @@ def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conv
 
 
 def clean_markdown_tables(text: str) -> str:
+    """Safely converts any pipe-delimited table into readable bullet points."""
     if not text or "|" not in text:
         return text or ""
 
@@ -322,7 +326,7 @@ def user_context_block(user: User) -> str:
     if clean_name and clean_name.lower() != "friend":
         parts.append(
             f"The user's real name is {clean_name}. You may address them by name occasionally when natural, "
-            "but do not awkwardly force their name into greetings or every response."
+            "but do not force their name into greetings or every response."
         )
 
     if user.birthday:
@@ -467,6 +471,7 @@ async def fetch_webpage(url: str, max_chars: int = 2500) -> Optional[Dict[str, s
 async def execute_python_rag(query: str) -> List[Dict[str, str]]:
     sources: List[Dict[str, str]] = []
 
+    # 1. Tavily API
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -487,6 +492,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("Tavily search warning:", e)
 
+    # 2. Serper API
     if SERPER_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -508,6 +514,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("Serper search warning:", e)
 
+    # 3. Native DDGS
     if HAS_DDGS:
         try:
             with DDGS() as ddgs:
@@ -525,6 +532,38 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("DDGS search warning:", e)
 
+    # 4. Standalone DuckDuckGo Lite HTTP Search
+    try:
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
+            res = await http.post("https://lite.duckduckgo.com/lite/", data={"q": query})
+            if res.status_code == 200:
+                html_text = res.text
+                link_pattern = re.compile(r'<a[^>]+class=[\'"]result-link[\'"][^>]+href=[\'"]([^\'"]+)[\'"][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+                snippet_pattern = re.compile(r'<td[^>]+class=[\'"]result-snippet[\'"][^>]*>(.*?)</td>', re.IGNORECASE | re.DOTALL)
+                links = link_pattern.findall(html_text)
+                snippets = snippet_pattern.findall(html_text)
+                for i in range(min(len(links), len(snippets), 4)):
+                    raw_url, raw_title = links[i]
+                    if "uddg=" in raw_url:
+                        parsed = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
+                        url = parsed.get("uddg", [raw_url])[0]
+                    else:
+                        url = raw_url
+                    clean_title = unescape(re.sub(r'<[^>]+>', '', raw_title).strip())
+                    clean_snippet = unescape(re.sub(r'<[^>]+>', '', snippets[i]).strip())
+                    if url.startswith("http") and clean_title:
+                        sources.append({
+                            "title": clean_title,
+                            "url": url,
+                            "snippet": clean_snippet,
+                            "site": urllib.parse.urlparse(url).netloc
+                        })
+                if sources:
+                    return sources
+    except Exception as e:
+        print("DDG Lite search warning:", e)
+
+    # 5. Wikipedia Full Text Search
     try:
         async with httpx.AsyncClient(timeout=6.0, headers=BROWSER_HEADERS) as http:
             q_enc = urllib.parse.quote_plus(query)
@@ -808,7 +847,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT (WITH MODEL SELECTION ENFORCEMENT)
+# CHAT ENDPOINT (WITH AUTO-RECOVERY FROM BROWSER.RUN TOOL ERRORS)
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -876,18 +915,57 @@ async def chat(
                         "GROUNDING DIRECTIVE:\n"
                         "- Use the above live web findings as ground truth.\n"
                         "- Cite claims with markdown links [Source Title](URL).\n"
-                        "- Do NOT use markdown tables (no `| Detail | Information |`)."
+                        "- Do NOT use markdown tables (no `| Detail | Information |`).\n"
+                        "- Do NOT generate tool calls or browser invocations. Answer in direct conversational text."
                     )
                 })
         except Exception as rag_err:
             print(f"RAG pre-flight non-fatal warning: {rag_err}")
 
-        # Execute Completion
-        completion = client.chat.completions.create(
-            model=active_model,
-            messages=messages,
-            temperature=0.3,
-        )
+        # Execute Completion with Automatic Recovery from tool_use_failed
+        try:
+            completion = client.chat.completions.create(
+                model=active_model,
+                messages=messages,
+                temperature=0.3,
+            )
+        except Exception as first_err:
+            err_text = str(first_err)
+            print(f"Chat completion initial attempt notice: {err_text}")
+
+            # Intercept 'Tool choice is none, but model called a tool' / 'browser.run'
+            if "Tool choice is none" in err_text or "browser.run" in err_text or "tool_use_failed" in err_text:
+                # Extract query the model was trying to search
+                m = re.search(r'"query":\s*"([^"]+)"', err_text)
+                retry_query = m.group(1) if m else user_text
+
+                # Fetch real-time search for that exact query
+                extra_sources = await execute_python_rag(retry_query)
+                if extra_sources:
+                    rag_block = "REAL-TIME VERIFIED WEB SOURCES:\n" + "\n".join([
+                        f"- [{s['title']}]({s['url']}): {s.get('snippet', '')}" for s in extra_sources[:4]
+                    ])
+                    messages.append({
+                        "role": "system",
+                        "content": f"ADDITIONAL SEARCH FINDINGS FOR '{retry_query}':\n{rag_block}"
+                    })
+
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "CRITICAL: Do NOT output any tool calls, function calls, or syntax like 'browser.run'. "
+                        "Answer the user's inquiry directly using conversational text and clean bullet points."
+                    )
+                })
+
+                # Automatic recovery re-call
+                completion = client.chat.completions.create(
+                    model=active_model,
+                    messages=messages,
+                    temperature=0.3,
+                )
+            else:
+                raise first_err
 
         raw = completion.choices[0].message.content or ""
         final = sanitize_response(raw)
@@ -987,11 +1065,27 @@ async def upload_image(
 
         messages = build_messages_for_conversation(db, user, conv.id)
 
-        completion = client.chat.completions.create(
-            model=MODEL_PAID,
-            messages=messages,
-            temperature=0.3,
-        )
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL_PAID,
+                messages=messages,
+                temperature=0.3,
+            )
+        except Exception as first_err:
+            err_text = str(first_err)
+            if "Tool choice is none" in err_text or "browser.run" in err_text:
+                messages.append({
+                    "role": "system",
+                    "content": "Do NOT emit tool calls or browser.run. Answer directly in conversational text."
+                })
+                completion = client.chat.completions.create(
+                    model=MODEL_PAID,
+                    messages=messages,
+                    temperature=0.3,
+                )
+            else:
+                raise first_err
+
         raw = completion.choices[0].message.content or ""
         final = sanitize_response(raw)
         db.add(Message(conversation_id=conv.id, role="assistant", content=final))
