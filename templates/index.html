@@ -161,6 +161,31 @@
       color: var(--amber);
     }
 
+    /* X (Twitter) Connection Pill */
+    #x-conn-btn {
+      background: var(--elevated);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+    #x-conn-btn:hover {
+      color: var(--text);
+      border-color: var(--muted);
+    }
+    #x-conn-btn.connected {
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.3);
+      background: rgba(56, 189, 248, 0.08);
+    }
+
     .header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     #status { font-size: 0.75rem; color: var(--green); font-weight: 500; }
     #edit-name-btn {
@@ -352,6 +377,9 @@
               <button type="button" class="model-tab-btn active" id="tab-20b" data-model="gpt-oss-20b">20b</button>
               <button type="button" class="model-tab-btn locked" id="tab-120b" data-model="gpt-oss-120b" title="120b requires Plus or Premium">120b 🔒</button>
             </div>
+
+            <!-- X (Twitter) Connection Pill -->
+            <button type="button" id="x-conn-btn" title="Connect to X (Twitter)">𝕏 Connect</button>
           </div>
           <div class="header-right">
             <span id="status">Ready</span>
@@ -456,11 +484,11 @@
       let escaped = escapeHtml(text);
 
       // Convert Markdown Links: [Title](URL) -> Clickable <a> tag
-      escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g, function(match, title, url) {
+      escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+|\/[^\s\)]+)\)/g, function(match, title, url) {
         return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + title + ' ↗</a>';
       });
 
-      // Convert remaining bare URLs (not already part of an <a> tag)
+      // Convert remaining bare URLs
       escaped = escaped.replace(/(^|[\s\n(])(https?:\/\/[^\s<)]+)/g, function(match, prefix, url) {
         return prefix + '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + url + ' ↗</a>';
       });
@@ -521,12 +549,17 @@
     const tab20b = document.getElementById("tab-20b");
     const tab120b = document.getElementById("tab-120b");
 
+    // X (Twitter) Connection Button
+    const xConnBtn = document.getElementById("x-conn-btn");
+
     let isRegister = false;
     let selectedFile = null;
     let currentConvId = null;
     let userPlan = "free";
     let emailVerified = true;
     let canImages = false;
+    let isXConnected = false;
+    let xUsername = "";
     let selectedModel = localStorage.getItem("daedalus_selected_model") || "gpt-oss-20b";
 
     function getToken() { return localStorage.getItem("nebula_token"); }
@@ -586,6 +619,17 @@
         tab120b.classList.remove("active");
       }
 
+      // X Connection Button State
+      if (isXConnected) {
+        xConnBtn.classList.add("connected");
+        xConnBtn.textContent = `𝕏 @${xUsername || "Connected"}`;
+        xConnBtn.title = "Connected to X. Click to disconnect.";
+      } else {
+        xConnBtn.classList.remove("connected");
+        xConnBtn.textContent = "𝕏 Connect";
+        xConnBtn.title = "Connect your X (Twitter) account";
+      }
+
       if (userPlan === "plus") { btnPlus.disabled = true; btnPlus.textContent = "Current plan"; }
       else { btnPlus.disabled = false; btnPlus.textContent = "Upgrade to Plus"; }
       if (userPlan === "premium") { btnPremium.disabled = true; btnPremium.textContent = "Current plan"; }
@@ -612,13 +656,34 @@
       tab20b.classList.remove("active");
     });
 
+    // X Connection Button Handler
+    xConnBtn.addEventListener("click", async function () {
+      if (isXConnected) {
+        if (!confirm(`Disconnect your X account (@${xUsername})?`)) return;
+        try {
+          const res = await fetch("/auth/x/disconnect", { method: "POST", headers: authHeaders() });
+          if (res.ok) {
+            isXConnected = false;
+            xUsername = "";
+            applyPlanUI();
+            addMessage("system", "Disconnected your X account.");
+          }
+        } catch (e) {
+          alert("Error disconnecting X: " + e.message);
+        }
+      } else {
+        const token = getToken();
+        if (!token) { alert("Please sign in first"); return; }
+        window.location.href = `/auth/x/login?token=${token}`;
+      }
+    });
+
     function addMessage(role, text) {
       const div = document.createElement("div");
       div.className = "msg " + role;
       const roleLabel = role === "user" ? "You" : role === "ai" ? "Daedalus" : "System";
       div.innerHTML = '<div class="role">' + roleLabel + '</div><div class="body"></div>' + (role === "ai" ? '<hr class="sep" />' : "");
       
-      // Render text with clickable links
       div.querySelector(".body").innerHTML = formatLinksAndMarkdown(text);
       
       chatEl.appendChild(div);
@@ -696,6 +761,8 @@
         localStorage.setItem("nebula_name", data.display_name || "");
         userPlan = data.plan || "free";
         emailVerified = !!data.email_verified;
+        isXConnected = !!data.x_connected;
+        xUsername = data.x_username || "";
         currentConvId = data.conversation_id || null;
         if (currentConvId) localStorage.setItem("nebula_conv", String(currentConvId));
         showChatUI(data.display_name);
@@ -948,6 +1015,13 @@
     removePreview.addEventListener("click", clearPreview);
 
     (async function init() {
+      // Handle redirect back after X authorization
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get("x_connected") === "true") {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        setTimeout(() => addMessage("system", "Connected your X account successfully!"), 400);
+      }
+
       if (getToken()) {
         try {
           const res = await fetch("/me", { headers: authHeaders() });
@@ -957,6 +1031,8 @@
             localStorage.setItem("nebula_name", data.display_name || "");
             userPlan = data.plan || "free";
             emailVerified = !!data.email_verified;
+            isXConnected = !!data.x_connected;
+            xUsername = data.x_username || "";
             const saved = localStorage.getItem("nebula_conv");
             if (saved) currentConvId = parseInt(saved, 10);
             showChatUI(data.display_name);
