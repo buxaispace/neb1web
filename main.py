@@ -102,7 +102,8 @@ SYSTEM_PROMPT = (
     "   - If the user asks what their username, display name, or preferred name is, tell them their name from USER CONTEXT.\n"
     "6. FORMATTING RULES (STRICT):\n"
     "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
-    "   - Present all information using clean natural prose or standard bullet points (`•`).\n"
+    "   - Present non-code information using clean natural prose or standard bullet points (`•`).\n"
+    "   - For code, ALWAYS use properly fenced markdown code blocks (e.g. ```python, ```html, ```javascript) with complete, runnable code.\n"
     "7. CREATOR, MEME & INTERNET CULTURE RULES:\n"
     "   - When asked about internet creators, YouTubers, TikTokers, streamers, or viral memes:\n"
     "     1. Explain the actual online context: viral comment section trolling, running jokes, wiki vandalism, or creator response videos.\n"
@@ -121,6 +122,14 @@ SYSTEM_PROMPT = (
     "   - Evaluate every new user message independently.\n"
     "   - If a previous message in the conversation was refused, DO NOT repeat the refusal on the next message.\n"
     "   - Treat every new message as a fresh turn and answer normally unless the new message itself directly asks for severe harm or illegal acts."
+)
+
+CODING_EXPERT_DIRECTIVE = (
+    "PRINCIPAL SOFTWARE ENGINEER & CODING MODE ACTIVE:\n"
+    "- Write complete, production-ready, bug-free, and directly runnable code.\n"
+    "- NEVER use lazy placeholders like '// ... rest of code here' or '# TODO: implement'. Write the full implementation.\n"
+    "- Wrap all code in fenced markdown blocks with the language tag (e.g. ```python, ```javascript, ```html, ```lua).\n"
+    "- Double-check all imports, variable names, edge cases, and syntax before outputting."
 )
 
 # ---------------------------------------------------------------------------
@@ -240,7 +249,7 @@ def decode_user_id_from_token(token_str: str) -> Optional[int]:
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db),
-):
+) -> User:
     if not credentials:
         raise HTTPException(status_code=401, detail="Not logged in")
     user_id = decode_user_id_from_token(credentials.credentials)
@@ -257,6 +266,9 @@ def require_verified(user: User) -> None:
         raise HTTPException(status_code=403, detail="Please verify your email first")
 
 
+# ---------------------------------------------------------------------------
+# TIER CAPABILITIES & REASONING LEVEL ENFORCEMENT
+# ---------------------------------------------------------------------------
 def resolve_model_for_user(plan: str, requested_model: Optional[str] = None) -> str:
     user_plan = (plan or "free").lower()
     if user_plan not in ("plus", "premium"):
@@ -272,8 +284,32 @@ def resolve_model_for_user(plan: str, requested_model: Optional[str] = None) -> 
     return MODEL_PAID
 
 
+def get_reasoning_effort_for_plan(plan: str) -> str:
+    """
+    Free -> locked to 'low'
+    Plus -> locked to 'medium'
+    Premium -> unlocked to 'high'
+    """
+    user_plan = (plan or "free").lower()
+    if user_plan == "premium":
+        return "high"
+    if user_plan == "plus":
+        return "medium"
+    return "low"
+
+
+def get_max_tokens_for_plan(plan: str) -> int:
+    user_plan = (plan or "free").lower()
+    if user_plan == "premium":
+        return 8192
+    if user_plan == "plus":
+        return 4096
+    return 2048
+
+
 def can_use_images(plan: str) -> bool:
-    return plan == "premium"
+    """Both Plus and Premium users get Vision-to-Code & Screenshot Bug Fixer."""
+    return (plan or "free").lower() in ("plus", "premium")
 
 
 def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conversation:
@@ -287,12 +323,12 @@ def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conv
     return conv
 
 
-def clean_markdown_tables(text: str) -> str:
-    if not text or "|" not in text:
-        return text or ""
+def clean_markdown_tables_outside_code(text_segment: str) -> str:
+    if not text_segment or "|" not in text_segment:
+        return text_segment or ""
 
     try:
-        lines = text.splitlines()
+        lines = text_segment.splitlines()
         new_lines = []
 
         for line in lines:
@@ -324,9 +360,23 @@ def clean_markdown_tables(text: str) -> str:
                 new_lines.append(line)
 
         result = "\n".join(new_lines)
-        return re.sub(r'\n{3,}', '\n\n', result).strip()
+        return re.sub(r'\n{3,}', '\n\n', result)
     except Exception:
-        return text
+        return text_segment
+
+
+def clean_markdown_tables(text: str) -> str:
+    """Protects all fenced ```code``` blocks while converting markdown tables outside of code into bullets."""
+    if not text or "|" not in text:
+        return text or ""
+    parts = re.split(r"(```[\s\S]*?```)", text)
+    out = []
+    for part in parts:
+        if part.startswith("```") and part.endswith("```"):
+            out.append(part)
+        else:
+            out.append(clean_markdown_tables_outside_code(part))
+    return "".join(out).strip()
 
 
 def sanitize_response(text: str) -> str:
@@ -402,7 +452,7 @@ def user_context_block(user: User) -> str:
             "(optional context only; do not bring it up unless relevant)."
         )
     if user.memory and user.memory.strip():
-        parts.append(f"Long-term notes about this user: {user.memory.strip()}")
+        parts.append(f"Long-term notes & preferences about this user: {user.memory.strip()}")
     return " ".join(parts)
 
 
@@ -436,7 +486,9 @@ def build_messages_for_conversation(db: Session, user: User, conversation_id: in
     )
     rows = list(reversed(rows))
     now_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y at %H:%M UTC")
+    reasoning_level = get_reasoning_effort_for_plan(user.plan or "free")
     system = (
+        f"Reasoning: {reasoning_level}\n"
         f"{SYSTEM_PROMPT}\n\n"
         f"TEMPORAL REALITY: Today is {now_str}.\n"
         f"USER CONTEXT:\n{user_context_block(user)}"
@@ -460,6 +512,59 @@ def build_messages_for_conversation(db: Session, user: User, conversation_id: in
     for m in cleaned_rows:
         history.append({"role": m.role, "content": m.content})
     return history
+
+
+def is_coding_or_logic_query(text: str) -> bool:
+    """Detects software engineering, coding, debugging, math, or algorithm prompts."""
+    lower = text.lower()
+    if "```" in text:
+        return True
+    coding_keywords = [
+        "code", "script", "python", "javascript", "typescript", "html", "css",
+        "react", "nextjs", "fastapi", "flask", "django", "sql", "postgres",
+        "luau", "roblox", "unity", "c#", "c++", "java", "rust", "golang",
+        "function", "variable", "bug", "error", "traceback", "exception",
+        "syntax", "compile", "algorithm", "regex", "json", "api endpoint",
+        "write a program", "make a website", "build a game", "debug", "fix this"
+    ]
+    return any(k in lower for k in coding_keywords)
+
+
+def maybe_update_user_memory(db: Session, user: User, user_text: str):
+    """Automatically extracts persistent user facts/preferences for Plus & Premium users."""
+    if (user.plan or "free").lower() not in ("plus", "premium") or not client:
+        return
+    lower = user_text.lower()
+    memory_triggers = [
+        "remember that", "my project is", "i am building", "i'm building",
+        "i code in", "my favorite language", "i prefer", "i use ", "my stack is"
+    ]
+    if not any(t in lower for t in memory_triggers):
+        return
+    try:
+        current_mem = (user.memory or "").strip()
+        resp = client.chat.completions.create(
+            model=MODEL_FREE,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract 1 brief, factual note about the user's preferences, tech stack, or projects "
+                        "from their message to append to their long-term memory. Output ONLY the short note (max 20 words)."
+                    )
+                },
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.1,
+            max_tokens=40,
+        )
+        new_note = (resp.choices[0].message.content or "").strip()
+        if new_note and new_note not in current_mem:
+            updated = (current_mem + " | " + new_note).strip(" |")
+            user.memory = updated[:4000]
+            db.commit()
+    except Exception as e:
+        print(f"Auto-memory update notice: {e}")
 
 
 def parse_birthday(value: Optional[str]) -> Optional[date]:
@@ -519,6 +624,7 @@ def user_public(user: User) -> dict:
         "can_images": can_use_images(plan),
         "default_model": resolve_model_for_user(plan),
         "can_switch_models": plan in ("plus", "premium"),
+        "reasoning_effort": get_reasoning_effort_for_plan(plan),
     }
 
 
@@ -569,11 +675,6 @@ def extract_email_body(msg: email.message.Message) -> str:
 
 
 def check_imap_for_cashapp_receipt(payment_code: str, expected_plan: str) -> Optional[str]:
-    """
-    Connects to Gmail/IMAP over SSL, checks recent Cash App emails from square.com / cash.app
-    for the user's unique payment_code and dollar amount ($4 for Plus, $8 for Premium).
-    Returns the verified plan name ('plus' or 'premium') if found, else None.
-    """
     if not EMAIL_USER or not EMAIL_APP_PASSWORD or not payment_code:
         return None
 
@@ -582,7 +683,6 @@ def check_imap_for_cashapp_receipt(payment_code: str, expected_plan: str) -> Opt
         mail.login(EMAIL_USER, EMAIL_APP_PASSWORD)
         mail.select("INBOX")
 
-        # Search for all messages and inspect the latest 30 emails
         status, data = mail.search(None, "ALL")
         if status != "OK" or not data or not data[0]:
             mail.logout()
@@ -608,7 +708,6 @@ def check_imap_for_cashapp_receipt(payment_code: str, expected_plan: str) -> Opt
                     combined_text = f"{subject_header} {body_text}"
                     combined_lower = combined_text.lower()
 
-                    # Verify sender is official Cash App / Square
                     is_from_cashapp = any(
                         domain in from_header
                         for domain in ["square.com", "cash.app", "squareup.com"]
@@ -616,21 +715,18 @@ def check_imap_for_cashapp_receipt(payment_code: str, expected_plan: str) -> Opt
                     if not is_from_cashapp:
                         continue
 
-                    # Verify the user's unique note code is in the email
                     if code_lower not in combined_lower:
                         continue
 
-                    # Verify it is a received payment (not a payment request or failure)
                     if not any(w in combined_lower for w in ["sent you", "received", "paid you", "you got"]):
                         continue
 
-                    # Check amount ($8+ grants Premium, $4+ grants Plus)
                     if re.search(r"\$\s*(?:8|9|1\d)(?:\.00)?\b", combined_text):
                         mail.logout()
                         return "premium"
                     if re.search(r"\$\s*[4567](?:\.00)?\b", combined_text):
                         mail.logout()
-                        return "plus" if expected_plan == "plus" else "plus"
+                        return "plus"
 
         mail.logout()
     except Exception as e:
@@ -700,7 +796,6 @@ async def fetch_webpage_content(url: str, max_chars: int = 2500) -> Optional[Dic
             if res.status_code == 200:
                 html = res.text
 
-                # Resolve Google News redirect wrapper to direct publisher URL
                 if "news.google.com" in url:
                     dest_match = re.search(r'href=[\'"](https?://(?!news\.google\.com)[^\'"]+)[\'"]', html)
                     if dest_match:
@@ -756,13 +851,11 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
     if len(cleaned) > 3:
         queries.append(cleaned)
 
-    # Detect creator / meme keywords
     lower_u = user_text.lower()
     if any(k in lower_u for k in ["why is everyone calling", "meme", "gay", "drama", "tiktok", "youtuber", "creator"]):
         queries.append(f"{cleaned} tiktok meme")
         queries.append(f"{cleaned} reddit drama")
 
-    # Fast LLM Expansion
     if client and len(user_turns) >= 1:
         try:
             history_snips = [f"{m['role']}: {m['content'][:120]}" for m in messages[-4:] if m.get("role") in ("user", "assistant")]
@@ -771,7 +864,7 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
                     "role": "system",
                     "content": (
                         "You are an expert search query formulation engine. Given the user dialogue, output 2 specific 3-to-5-word "
-                        "search queries that will locate the exact content creator discussion, TikTok meme, or news story being asked about. "
+                        "search queries that will locate the exact content creator discussion, technical docs, or news story being asked about. "
                         "Output each query on a new line with no quotes or numbers."
                     )
                 },
@@ -852,18 +945,19 @@ async def query_google_news_rss(query: str) -> List[Dict[str, str]]:
     return results
 
 
-async def execute_python_rag(query: str) -> List[Dict[str, str]]:
+async def execute_python_rag(query: str, max_sources: int = 4, include_news: bool = True) -> List[Dict[str, str]]:
     sources: List[Dict[str, str]] = []
 
-    # 1. Reddit Social & Creator Search
+    # 1. Reddit Social / Technical / Creator Search
     reddit_res = await query_reddit_search(query)
     if reddit_res:
         sources.extend(reddit_res)
 
-    # 2. Google News RSS
-    news_res = await query_google_news_rss(query)
-    if news_res:
-        sources.extend(news_res)
+    # 2. Google News RSS (Skipped on pure coding queries so news doesn't pollute code)
+    if include_news:
+        news_res = await query_google_news_rss(query)
+        if news_res:
+            sources.extend(news_res)
 
     # 3. Tavily API
     if TAVILY_API_KEY:
@@ -871,7 +965,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
             async with httpx.AsyncClient(timeout=6.0) as http:
                 r = await http.post(
                     "https://api.tavily.com/search",
-                    json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 4},
+                    json={"api_key": TAVILY_API_KEY, "query": query, "max_results": max_sources},
                 )
                 if r.status_code == 200:
                     for item in r.json().get("results", []):
@@ -891,10 +985,10 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                 r = await http.post(
                     "https://google.serper.dev/search",
                     headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
-                    json={"q": query, "num": 4},
+                    json={"q": query, "num": max_sources},
                 )
                 if r.status_code == 200:
-                    for item in r.json().get("organic", [])[:4]:
+                    for item in r.json().get("organic", [])[:max_sources]:
                         sources.append({
                             "title": item.get("title", "Google Result"),
                             "url": item.get("link", ""),
@@ -908,7 +1002,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
     if HAS_DDGS:
         try:
             with DDGS() as ddgs:
-                for r in ddgs.text(query, max_results=4):
+                for r in ddgs.text(query, max_results=max_sources):
                     href = r.get("href", "")
                     if href.startswith("http"):
                         sources.append({
@@ -930,7 +1024,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                 snippet_pattern = re.compile(r'<td[^>]+class=[\'"]result-snippet[\'"][^>]*>(.*?)</td>', re.IGNORECASE | re.DOTALL)
                 links = link_pattern.findall(html_text)
                 snippets = snippet_pattern.findall(html_text)
-                for i in range(min(len(links), len(snippets), 4)):
+                for i in range(min(len(links), len(snippets), max_sources)):
                     raw_url, raw_title = links[i]
                     if "uddg=" in raw_url:
                         parsed = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
@@ -949,7 +1043,6 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
     except Exception as e:
         print("DDG Lite warning:", e)
 
-    # De-duplicate results
     unique_sources = []
     seen = set()
     for s in sources:
@@ -957,15 +1050,15 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
             seen.add(s["url"])
             unique_sources.append(s)
 
-    # Deep Crawl Top 2 Results for Full Body Content (Prevents Hallucinations)
-    for i in range(min(2, len(unique_sources))):
+    crawl_count = 3 if max_sources >= 6 else 2
+    for i in range(min(crawl_count, len(unique_sources))):
         s = unique_sources[i]
         crawled = await fetch_webpage_content(s["url"])
         if crawled and crawled.get("content"):
             s["content"] = crawled["content"]
             s["url"] = crawled["url"]
 
-    return unique_sources[:4]
+    return unique_sources[:max_sources]
 
 
 # ---------------------------------------------------------------------------
@@ -1230,7 +1323,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT
+# CHAT ENDPOINT (TIERED REASONING + CODING MODE + 2-PASS PREMIUM CRITIQUE)
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -1260,9 +1353,14 @@ async def chat(
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
 
-        messages = build_messages_for_conversation(db, user, conv.id)
-        active_model = resolve_model_for_user(user.plan or "free", model)
+        # Auto-extract user/project memory for Plus & Premium users
+        maybe_update_user_memory(db, user, user_text)
 
+        user_plan = (user.plan or "free").lower()
+        active_model = resolve_model_for_user(user_plan, model)
+        max_out_tokens = get_max_tokens_for_plan(user_plan)
+
+        messages = build_messages_for_conversation(db, user, conv.id)
         lowered_text = user_text.lower().strip()
 
         if lowered_text in ["hey chatgpt", "hello chatgpt", "hi chatgpt", "chatgpt"]:
@@ -1272,10 +1370,22 @@ async def chat(
             db.commit()
             return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
 
+        coding_mode = is_coding_or_logic_query(user_text)
+        if coding_mode:
+            messages.append({"role": "system", "content": CODING_EXPERT_DIRECTIVE})
+
+        # Pre-Flight RAG Grounding:
+        # - Skip on personal profile queries
+        # - On coding queries, only search if URLs are provided or user explicitly asks for docs/latest
         live_sources = []
         search_queries = [user_text]
-        if not is_personal_or_account_query(user_text):
+        should_run_rag = not is_personal_or_account_query(user_text) and (
+            not coding_mode or bool(extract_urls(user_text)) or any(w in lowered_text for w in ["docs", "documentation", "latest", "2026", "search"])
+        )
+
+        if should_run_rag:
             try:
+                max_src = 6 if user_plan == "premium" else 4
                 search_queries = generate_smart_search_queries(messages, user_text)
                 urls_in_prompt = extract_urls(user_text)
                 for u in urls_in_prompt[:2]:
@@ -1287,17 +1397,17 @@ async def chat(
                         })
 
                 for q in search_queries:
-                    found = await execute_python_rag(q)
+                    found = await execute_python_rag(q, max_sources=max_src, include_news=not coding_mode)
                     if found:
                         for item in found:
                             if item["url"] not in [s["url"] for s in live_sources]:
                                 live_sources.append(item)
-                    if len(live_sources) >= 4:
+                    if len(live_sources) >= max_src:
                         break
 
                 if live_sources:
                     formatted_sources = []
-                    for s in live_sources[:4]:
+                    for s in live_sources[:max_src]:
                         snippet_or_body = s.get("content") or s.get("snippet", "")
                         formatted_sources.append(
                             f"Source: [{s['title']}]({s['url']})\n"
@@ -1326,6 +1436,7 @@ async def chat(
                 model=active_model,
                 messages=messages,
                 temperature=0.3,
+                max_tokens=max_out_tokens,
             )
         except Exception as first_err:
             err_text = str(first_err)
@@ -1359,17 +1470,51 @@ async def chat(
                     model=active_model,
                     messages=messages,
                     temperature=0.3,
+                    max_tokens=max_out_tokens,
                 )
             else:
                 raise first_err
 
         raw = completion.choices[0].message.content or ""
 
+        # Premium 2-Pass Self-Critique Engine (For Premium users on coding & architecture tasks)
+        if user_plan == "premium" and coding_mode and len(raw) > 120:
+            try:
+                review_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Reasoning: high\n"
+                            f"{SYSTEM_PROMPT}\n"
+                            "You are a Principal Software Architect reviewing a draft solution. "
+                            "Check the draft for any bugs, missing imports, incomplete placeholders, or logic errors. "
+                            "Output ONLY the final, perfected response and complete runnable code directly to the user."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": f"User Request:\n{user_text}\n\nDraft Solution to Verify & Perfect:\n{raw}"
+                    }
+                ]
+                review_comp = client.chat.completions.create(
+                    model=MODEL_PAID,
+                    messages=review_messages,
+                    temperature=0.2,
+                    max_tokens=max_out_tokens,
+                )
+                reviewed_raw = (review_comp.choices[0].message.content or "").strip()
+                if reviewed_raw and not is_refusal_message(reviewed_raw):
+                    raw = reviewed_raw
+            except Exception as rev_err:
+                print(f"Premium 2-pass review notice: {rev_err}")
+
         # Automatic Single-Turn Refusal Loop Escape
         if is_refusal_message(raw) and not is_slur_or_restricted_name(user_text):
             try:
                 now_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y at %H:%M UTC")
+                reasoning_level = get_reasoning_effort_for_plan(user_plan)
                 fresh_system = (
+                    f"Reasoning: {reasoning_level}\n"
                     f"{SYSTEM_PROMPT}\n\n"
                     f"TEMPORAL REALITY: Today is {now_str}.\n"
                     f"USER CONTEXT:\n{user_context_block(user)}\n\n"
@@ -1383,6 +1528,7 @@ async def chat(
                     model=active_model,
                     messages=fresh_messages,
                     temperature=0.3,
+                    max_tokens=max_out_tokens,
                 )
                 raw = fresh_comp.choices[0].message.content or raw
             except Exception as retry_err:
@@ -1427,18 +1573,23 @@ async def chat(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ---------------------------------------------------------------------------
+# UPLOAD (VISION-TO-CODE & SCREENSHOT BUG FIXER FOR PLUS & PREMIUM)
+# ---------------------------------------------------------------------------
 @app.post("/upload")
 async def upload_image(
     file: UploadFile = File(...),
     conversation_id: int = Form(...),
     caption: Optional[str] = Form(None),
+    model: Optional[str] = Form(None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     require_verified(user)
-    if not can_use_images(user.plan or "free"):
+    user_plan = (user.plan or "free").lower()
+    if not can_use_images(user_plan):
         return JSONResponse(
-            {"error": "Image upload requires Premium ($8/mo). Upgrade in Plans."},
+            {"error": "Image & screenshot uploads require Plus ($4/mo) or Premium ($8/mo). Upgrade in Plans."},
             status_code=403,
         )
     if not client:
@@ -1480,38 +1631,45 @@ async def upload_image(
                     {
                         "type": "text",
                         "text": (
-                            "Describe this image in clear detail. "
-                            "Include important objects, text, colors, setting, "
-                            "and any notable details. Be factual and thorough but concise."
+                            "Analyze this image thoroughly:\n"
+                            "1. If it contains code, terminal/console error logs, stack traces, or IDE screenshots, "
+                            "transcribe every line of visible code, exact error messages, and line numbers.\n"
+                            "2. If it is a UI design or website screenshot, describe the layout, components, colors, and typography in detail.\n"
+                            "3. Otherwise, describe all important objects, text, setting, and details accurately."
                         ),
                     },
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             }],
             temperature=0.2,
-            max_tokens=500,
+            max_tokens=1000,
         )
         image_description = vision_completion.choices[0].message.content.strip()
 
-        note = f"[User uploaded an image]\nImage description: {image_description}"
+        note = f"[User uploaded an image/screenshot]\nExtracted Image Details:\n{image_description}"
         if caption and caption.strip():
-            note += f"\nUser said: {caption.strip()}"
+            note += f"\n\nUser Request: {caption.strip()}"
 
         msg_count = db.query(Message).filter(Message.conversation_id == conv.id).count()
         if msg_count == 0 and conv.title == "New chat":
-            conv.title = make_title_from_text(caption or "Image chat")
+            conv.title = make_title_from_text(caption or "Image analysis")
 
         db.add(Message(conversation_id=conv.id, role="user", content=note))
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
 
+        # Plus runs at Reasoning: medium; Premium runs at Reasoning: high
         messages = build_messages_for_conversation(db, user, conv.id)
+        messages.append({"role": "system", "content": CODING_EXPERT_DIRECTIVE})
+        active_model = resolve_model_for_user(user_plan, model)
+        max_out_tokens = get_max_tokens_for_plan(user_plan)
 
         try:
             completion = client.chat.completions.create(
-                model=MODEL_PAID,
+                model=active_model,
                 messages=messages,
                 temperature=0.3,
+                max_tokens=max_out_tokens,
             )
         except Exception as first_err:
             err_text = str(first_err)
@@ -1521,9 +1679,10 @@ async def upload_image(
                     "content": "Do NOT emit tool calls or browser.run. Answer directly in conversational text."
                 })
                 completion = client.chat.completions.create(
-                    model=MODEL_PAID,
+                    model=active_model,
                     messages=messages,
                     temperature=0.3,
+                    max_tokens=max_out_tokens,
                 )
             else:
                 raise first_err
@@ -1574,7 +1733,6 @@ async def create_checkout(
     if not CASHAPP_TAG:
         return JSONResponse({"error": "CASHAPP_TAG is not configured in environment variables"}, status_code=500)
 
-    # Generate or update the user's unique payment verification code
     if not user.payment_code:
         user.payment_code = f"DAED-{user.id}-{secrets.token_hex(2).upper()}"
     user.pending_plan = plan
@@ -1584,7 +1742,6 @@ async def create_checkout(
     clean_tag = CASHAPP_TAG.lstrip("$")
     encoded_note = urllib.parse.quote(user.payment_code)
 
-    # Auto-load amount and note into Cash App web & mobile deep links
     cashapp_url = f"https://cash.app/${clean_tag}/{amount}?note={encoded_note}"
 
     return JSONResponse({
@@ -1612,7 +1769,6 @@ async def verify_cashapp(
 
     target_plan = user.pending_plan or "plus"
 
-    # Run IMAP inbox check in background thread so FastAPI never blocks
     matched_plan = await asyncio.to_thread(
         check_imap_for_cashapp_receipt,
         user.payment_code,
@@ -1621,7 +1777,6 @@ async def verify_cashapp(
 
     if matched_plan in ("plus", "premium"):
         user.plan = matched_plan
-        # Clear payment_code so the same email receipt can never be reused
         user.payment_code = None
         user.pending_plan = None
         db.commit()
