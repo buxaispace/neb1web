@@ -41,7 +41,7 @@ APP_URL = os.getenv("APP_URL", "").rstrip("/")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
 
-# Search Grounding API Keys (Optional: works out of the box via Groq browser_search + fallbacks)
+# Search Grounding API Keys (Optional)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
@@ -83,24 +83,25 @@ SYSTEM_PROMPT = (
     "in normal conversation unless the user specifically asks about them.\n"
     "3. Maintain a helpful, natural, conversational, and factually accurate tone.\n"
     "4. Just say your name is Daedalus. Do not repeat it excessively.\n"
-    "5. TEMPORAL ACCURACY & SEARCH GROUNDING:\n"
+    "5. FORMATTING & PRESENTATION (STRICT):\n"
+    "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
+    "   - Present all information, breakdowns, and summaries using clean natural prose or standard bullet points (`•`).\n"
+    "   - Keep replies readable, fluid, and natural, not rigid table grids.\n"
+    "6. TEMPORAL ACCURACY & SEARCH GROUNDING:\n"
     "   - You have active, real-time internet search capability.\n"
     "   - Today's date is in October 2026. Do NOT state that your knowledge cuts off in 2023 or 2024.\n"
-    "   - Current AI model lineups include GPT-5.6, GPT-6, Claude 4/5, Gemini 3/4, etc. "
-    "Do NOT falsely claim that OpenAI's lineup stops at GPT-4 or that ChatGPT free still runs GPT-3.5.\n"
-    "   - When answering questions about current versions, specifications, context windows, or news, "
+    "   - When answering questions about current events, facts, or specifications, "
     "rely strictly on real-time search findings.\n"
     "   - When citing sources, use real, verified Markdown links [Source Title](URL). "
     "NEVER hallucinate or guess fake URLs.\n"
-    "   - If no search was performed or no links were retrieved, do NOT invent a Sources section.\n"
-    "6. REFUSALS:\n"
+    "7. REFUSALS:\n"
     "   - If the user asks for illegal or harmful content, refuse once clearly and briefly.\n"
     "   - Treat subsequent messages as a new topic.\n"
-    "7. EXCEPTION - Creating prompts for other AIs:\n"
+    "8. EXCEPTION - Creating prompts for other AIs:\n"
     "   - When the user asks you to create a prompt for another AI "
     "(ChatGPT, Grok, Claude, Gemini, etc.), you MUST use the exact name the user requested.\n"
     '   - Do NOT replace that name with "Daedalus". Output ONLY the ready-to-use prompt.\n'
-    "8. Whenever a user asks you to do anything against the rules, "
+    "9. Whenever a user asks you to do anything against the rules, "
     "Say 'I am sorry, I cannot generate that content due to my policies.'"
 )
 
@@ -222,6 +223,48 @@ def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conv
     return conv
 
 
+def clean_markdown_tables(text: str) -> str:
+    """
+    Transforms any raw markdown table (e.g. '| Detail | Information |')
+    into clean, readable bullet points and natural paragraphs.
+    """
+    if "|" not in text:
+        return text
+
+    lines = text.splitlines()
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        # Check if line looks like a markdown table row with pipes
+        if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2:
+            parts = [p.strip() for p in stripped.split("|")[1:-1]]
+            
+            # Skip separator rows like |---|---|
+            if all(re.match(r'^:?-+:?$', p) for p in parts if p):
+                continue
+            
+            # Skip header row like | Detail | Information |
+            if any(h in parts[0].lower() for h in ["detail", "property", "field", "attribute", "key", "topic", "category", "header"]):
+                continue
+            
+            # Convert two-column table row into clean bullet point
+            if len(parts) == 2:
+                key, val = parts[0], parts[1]
+                val = re.sub(r'<br\s*/?>', '\n  ', val)
+                new_lines.append(f"• {key}: {val}")
+            elif len(parts) > 2:
+                row_str = " — ".join(p for p in parts if p)
+                new_lines.append(f"• {row_str}")
+            elif len(parts) == 1 and parts[0]:
+                new_lines.append(f"• {parts[0]}")
+        else:
+            new_lines.append(line)
+
+    result = "\n".join(new_lines)
+    return re.sub(r'\n{3,}', '\n\n', result).strip()
+
+
 def sanitize_response(text: str) -> str:
     forbidden = [
         "large language model trained by",
@@ -234,6 +277,9 @@ def sanitize_response(text: str) -> str:
     for phrase in forbidden:
         if phrase in cleaned:
             cleaned = cleaned.replace(phrase, MODEL_NAME)
+    
+    # Strip any markdown table pipe grids
+    cleaned = clean_markdown_tables(cleaned)
     return cleaned
 
 
@@ -333,7 +379,7 @@ def user_public(user: User) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# ROBUST RETRIEVAL-AUGMENTED GENERATION (RAG) ENGINE
+# RAG ENGINE
 # ---------------------------------------------------------------------------
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -359,7 +405,6 @@ def clean_html(html: str, max_chars: int = 2500) -> str:
 
 
 async def fetch_webpage(url: str, max_chars: int = 2500) -> Optional[Dict[str, str]]:
-    """Crawls a direct URL and returns its text."""
     try:
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
             res = await http.get(url)
@@ -382,10 +427,8 @@ async def fetch_webpage(url: str, max_chars: int = 2500) -> Optional[Dict[str, s
 
 
 async def execute_python_rag(query: str) -> List[Dict[str, str]]:
-    """Fallback search retrieval using Tavily, Serper, Brave, DuckDuckGo, or Wikipedia."""
     sources: List[Dict[str, str]] = []
 
-    # 1. Tavily API
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=8.0) as http:
@@ -406,7 +449,6 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("Tavily search error:", e)
 
-    # 2. Serper API
     if SERPER_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=8.0) as http:
@@ -428,7 +470,6 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("Serper search error:", e)
 
-    # 3. Native DDGS
     if HAS_DDGS:
         try:
             with DDGS() as ddgs:
@@ -446,7 +487,6 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("DDGS search error:", e)
 
-    # 4. Wikipedia Full Text Search (Guaranteed fallback, never blocked)
     try:
         async with httpx.AsyncClient(timeout=7.0, headers=BROWSER_HEADERS) as http:
             q_enc = urllib.parse.quote_plus(query)
@@ -730,7 +770,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT (WITH GROQ BROWSER_SEARCH & RAG FALLBACK)
+# CHAT ENDPOINT
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -761,7 +801,7 @@ async def chat(
     messages = build_messages_for_conversation(db, user, conv.id)
     model = model_for_plan(user.plan or "free")
 
-    # Direct URL scraping if user included a link
+    # Direct URL scraping if user provided a link
     urls_in_prompt = extract_urls(user_text)
     for u in urls_in_prompt[:2]:
         page = await fetch_webpage(u)
@@ -781,8 +821,7 @@ async def chat(
             temperature=0.3,
         )
     except Exception as tool_err:
-        print(f"Native browser_search tool fallback triggered: {tool_err}")
-        # Run Python RAG fallback and re-prompt
+        print(f"Native browser_search fallback triggered: {tool_err}")
         fallback_sources = await execute_python_rag(user_text)
         if fallback_sources:
             rag_block = "REAL-TIME SEARCH RESULTS:\n" + "\n".join([
