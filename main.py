@@ -205,10 +205,21 @@ def require_verified(user: User) -> None:
         raise HTTPException(status_code=403, detail="Please verify your email first")
 
 
-def model_for_plan(plan: str) -> str:
-    if plan in ("plus", "premium"):
-        return MODEL_PAID
-    return MODEL_FREE
+def resolve_model_for_user(plan: str, requested_model: Optional[str] = None) -> str:
+    """Enforces tier model permissions. Free users are locked to gpt-oss-20b."""
+    user_plan = (plan or "free").lower()
+    if user_plan not in ("plus", "premium"):
+        return MODEL_FREE
+
+    # Plus and Premium can choose 20b or 120b
+    if requested_model:
+        req = requested_model.lower().strip()
+        if "20b" in req:
+            return MODEL_FREE
+        if "120b" in req:
+            return MODEL_PAID
+
+    return MODEL_PAID
 
 
 def can_use_images(plan: str) -> bool:
@@ -227,7 +238,6 @@ def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conv
 
 
 def clean_markdown_tables(text: str) -> str:
-    """Safely converts any pipe-delimited table into readable bullet points."""
     if not text or "|" not in text:
         return text or ""
 
@@ -282,10 +292,8 @@ def sanitize_response(text: str) -> str:
         if phrase in cleaned:
             cleaned = cleaned.replace(phrase, MODEL_NAME)
 
-    # Convert any raw markdown table grids into clean bullet points
     cleaned = clean_markdown_tables(cleaned)
 
-    # Strip any accidental domain-name greetings (e.g. "Hey buxai.space! -> Hey!")
     cleaned = re.sub(
         r'^(Hey|Hello|Hi)\s+[a-zA-Z0-9_\-\.]+\.(space|com|org|net|io|ai|app|dev|co)[!,\.]*\s*',
         r'\1! ',
@@ -296,7 +304,6 @@ def sanitize_response(text: str) -> str:
 
 
 def extract_clean_human_name(raw_name: Optional[str]) -> Optional[str]:
-    """Filters out domains, emails, and website URLs so they are never used as a person's name."""
     if not raw_name:
         return None
     name = raw_name.strip()
@@ -404,7 +411,8 @@ def user_public(user: User) -> dict:
         "plan": plan,
         "email_verified": bool(user.email_verified),
         "can_images": can_use_images(plan),
-        "model": model_for_plan(plan),
+        "default_model": resolve_model_for_user(plan),
+        "can_switch_models": plan in ("plus", "premium"),
     }
 
 
@@ -459,7 +467,6 @@ async def fetch_webpage(url: str, max_chars: int = 2500) -> Optional[Dict[str, s
 async def execute_python_rag(query: str) -> List[Dict[str, str]]:
     sources: List[Dict[str, str]] = []
 
-    # 1. Tavily API
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -480,7 +487,6 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("Tavily search warning:", e)
 
-    # 2. Serper API
     if SERPER_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -502,7 +508,6 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("Serper search warning:", e)
 
-    # 3. Native DDGS
     if HAS_DDGS:
         try:
             with DDGS() as ddgs:
@@ -520,7 +525,6 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("DDGS search warning:", e)
 
-    # 4. Wikipedia Full Text Search (Guaranteed fallback, zero rate-limit)
     try:
         async with httpx.AsyncClient(timeout=6.0, headers=BROWSER_HEADERS) as http:
             q_enc = urllib.parse.quote_plus(query)
@@ -804,12 +808,13 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT
+# CHAT ENDPOINT (WITH MODEL SELECTION ENFORCEMENT)
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
     message: str = Form(...),
     conversation_id: int = Form(...),
+    model: Optional[str] = Form(None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -834,7 +839,9 @@ async def chat(
 
         # Build conversation history
         messages = build_messages_for_conversation(db, user, conv.id)
-        model = model_for_plan(user.plan or "free")
+
+        # Resolve model according to tier rules (Free locked to 20b)
+        active_model = resolve_model_for_user(user.plan or "free", model)
 
         # Check for direct identity greeting test ("hey chatgpt")
         lowered_text = user_text.lower().strip()
@@ -843,7 +850,7 @@ async def chat(
             db.add(Message(conversation_id=conv.id, role="assistant", content=final))
             conv.updated_at = datetime.now(timezone.utc)
             db.commit()
-            return JSONResponse({"reply": final, "title": conv.title, "model": model})
+            return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
 
         # Pre-Flight RAG Grounding
         try:
@@ -877,7 +884,7 @@ async def chat(
 
         # Execute Completion
         completion = client.chat.completions.create(
-            model=model,
+            model=active_model,
             messages=messages,
             temperature=0.3,
         )
@@ -893,7 +900,7 @@ async def chat(
         return JSONResponse({
             "reply": final,
             "title": conv.title,
-            "model": model,
+            "model": active_model,
         })
     except Exception as e:
         print(f"Chat completion error: {e}")
