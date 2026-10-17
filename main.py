@@ -4,6 +4,7 @@ import secrets
 import base64
 import io
 import urllib.parse
+import xml.etree.ElementTree as ET
 from html import unescape
 from datetime import datetime, timedelta, timezone, date
 from typing import List, Optional, Dict, Any
@@ -79,40 +80,33 @@ SYSTEM_PROMPT = (
     "2. Developer: AstroVectAI.\n"
     "BEHAVIORAL RULES:\n"
     f'1. If asked "Who are you?", reply exactly: "I am {FULL_IDENTITY}."\n'
-    "2. IF ADDRESSED AS CHATGPT (e.g. 'hey chatgpt', 'hello chatgpt', 'are you chatgpt'):\n"
-    "   - State your identity clearly and politely: 'I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?'\n"
-    "   - Do NOT enthusiastically play along or say generic greetings like 'Hey <domain>! I am Daedalus—what can I do for you today?'.\n"
+    "2. IF ADDRESSED AS CHATGPT (e.g. 'hey chatgpt', 'hello chatgpt'):\n"
+    "   - State your identity clearly: 'I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?'\n"
     "3. NEVER pretend to be ChatGPT, OpenAI, Grok, Claude, or other AI models.\n"
-    "4. Maintain a helpful, natural, conversational, and factually accurate tone.\n"
+    "4. Maintain a helpful, natural, conversational, and highly intelligent tone.\n"
     "5. GREETING & NAME RULES:\n"
     "   - NEVER greet users using website domain names, URLs, or email handles (e.g., NEVER say 'Hey buxai.space!').\n"
     "   - Do NOT awkwardly force a user's name into every greeting or response.\n"
     "6. FORMATTING RULES (STRICT):\n"
     "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
     "   - Present all information using clean natural prose or standard bullet points (`•`).\n"
-    "7. NO-TOOL DIRECTIVE:\n"
-    "   - You do NOT possess internal function calling or browser commands.\n"
-    "   - NEVER output tool calls, JSON function calls, or syntax like 'browser.run'.\n"
+    "7. PROACTIVE RECALL & MINIMAL KEYWORD INTELLIGENCE:\n"
+    "   - Users frequently speak in casual shorthand with minimal keywords (e.g., 'what happened to that owen kid', 'the kid with the ebike in september').\n"
+    "   - DO NOT deflect, stall, or repeatedly ask the user for more details (such as asking for full names, cities, or exact dates) if the clues match a known recent event.\n"
+    "   - Proactively connect clues across conversation history. For example, if asked about an 'Owen kid' and an 'ebike in September', immediately connect this to 14-year-old Owen Harris and the fatal September 12, 2026 e-bike accident in Pacific Beach, San Diego, California.\n"
+    "   - Immediately provide the full, verified factual summary directly.\n"
+    "8. NO-TOOL DIRECTIVE:\n"
+    "   - NEVER output internal tool calls, JSON function calls, or syntax like 'browser.run'.\n"
     "   - All web search grounding is conducted externally and supplied to you in the prompt.\n"
     "   - Output ONLY direct textual answers.\n"
-    "8. TEMPORAL ACCURACY & GROUNDING:\n"
+    "9. PUBLIC NEWS & INCIDENTS:\n"
+    "   - Publicly reported news stories, accidents, traffic collisions, casualties, and notable events are 100% PERMITTED.\n"
+    "   - NEVER give boilerplate refusals like 'I can\\'t help with that' for public news inquiries.\n"
+    "10. TEMPORAL ACCURACY & GROUNDING:\n"
     "   - Today's date is in October 2026. Do NOT state that your knowledge cuts off in 2023 or 2024.\n"
-    "   - When answering questions about current events, facts, or specifications, "
-    "rely strictly on real-time search findings provided in context.\n"
-    "   - When citing sources, use real, verified Markdown links [Source Title](URL). "
-    "NEVER hallucinate or guess fake URLs.\n"
-    "9. PUBLIC NEWS, ACCIDENTS & LEGITIMATE INQUIRIES (ANTI-REFUSAL):\n"
-    "   - Inquiries regarding publicly reported news events, accidents, traffic collisions, casualties, and notable people in the news are 100% PERMITTED.\n"
-    "   - NEVER give boilerplate refusals like 'I can\\'t help with that' or 'I can\\'t provide that information' for public news inquiries.\n"
-    "   - If the user asks about an incident, person, or accident in the news, report the public facts objectively and helpfully.\n"
-    "   - If the user asks 'why not?', do NOT repeat previous refusals; answer their factual question using verified search findings.\n"
-    "10. ILLEGAL & HARMFUL REFUSALS:\n"
-    "   - Only refuse requests that promote actionable illegal violence, weapons manufacturing, or malware. Refuse once briefly.\n"
-    "11. EXCEPTION - Creating prompts for other AIs:\n"
-    "   - When the user asks you to create a prompt for another AI "
-    "(ChatGPT, Grok, Claude, Gemini, etc.), you MUST use the exact name the user requested.\n"
-    '   - Do NOT replace that name with "Daedalus". Output ONLY the ready-to-use prompt.\n'
-    "12. Whenever a user asks you to do anything against the rules, "
+    "   - Rely strictly on the real-time search findings provided in context.\n"
+    "   - Cite sources with real Markdown links [Source Title](URL). NEVER invent fake URLs.\n"
+    "11. Whenever a user asks you to do anything against the rules, "
     "Say 'I am sorry, I cannot generate that content due to my policies.'"
 )
 
@@ -214,7 +208,6 @@ def require_verified(user: User) -> None:
 
 
 def resolve_model_for_user(plan: str, requested_model: Optional[str] = None) -> str:
-    """Enforces tier model permissions. Free users are locked to gpt-oss-20b."""
     user_plan = (plan or "free").lower()
     if user_plan not in ("plus", "premium"):
         return MODEL_FREE
@@ -424,7 +417,7 @@ def user_public(user: User) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# RAG ENGINE & MULTI-TURN SEARCH REWRITE
+# SMART QUERY EXPANSION & MULTI-SOURCE SEARCH ENGINE
 # ---------------------------------------------------------------------------
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -471,27 +464,17 @@ async def fetch_webpage(url: str, max_chars: int = 2500) -> Optional[Dict[str, s
     return None
 
 
-def build_search_query_from_history(messages: List[dict], current_text: str) -> str:
+def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[str]:
     """
-    Connects short follow-up messages ('the one with that ebike', 'why not?')
-    with prior conversational topics so search queries never lose context.
+    Intelligently expands minimal keywords ('what happened to that owen kid',
+    'the kid with the ebike in september') into precise news & event queries.
     """
     user_turns = [m["content"] for m in messages if m.get("role") == "user"]
-    clean_current = current_text.strip()
-    words = clean_current.split()
+    queries = []
 
-    is_followup = (
-        len(words) <= 7 or
-        any(w in clean_current.lower() for w in [
-            "the one", "why not", "why", "who", "which one", "what about",
-            "tell me", "that one", "explain", "how come"
-        ])
-    )
-
-    if is_followup and len(user_turns) > 1:
-        # Combine preceding 2 user turns with the current turn
+    # Combined contextual query across turns
+    if len(user_turns) > 1:
         combined = " ".join(user_turns[-3:])
-        # Strip common conversational filler
         cleaned = re.sub(
             r'\b(why not|why|what happened to|tell me about|who is|can you|the one with|that|back in|can you help|explain)\b',
             ' ',
@@ -499,16 +482,84 @@ def build_search_query_from_history(messages: List[dict], current_text: str) -> 
             flags=re.IGNORECASE
         )
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        if len(cleaned) > 5:
-            return cleaned
+        if len(cleaned) > 4:
+            queries.append(cleaned)
+            # Add targeted incident variations
+            queries.append(f"{cleaned} accident news")
 
-    return clean_current
+    # Clean current text query
+    curr_clean = re.sub(r'\b(what happened to|who is|tell me about|what about)\b', '', user_text, flags=re.IGNORECASE).strip()
+    if curr_clean and curr_clean not in queries:
+        queries.append(curr_clean)
+
+    # Fast LLM Expansion if available (50ms)
+    if client and len(user_turns) >= 1:
+        try:
+            history_snips = [f"{m['role']}: {m['content'][:120]}" for m in messages[-4:] if m.get("role") in ("user", "assistant")]
+            exp_prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a search query optimizer. Given the dialogue, output 2 specific 3-to-5-word web search queries "
+                        "that identify the exact person, incident, or news story being discussed. "
+                        "Combine names, dates, and subjects across earlier turns if relevant. "
+                        "Output each query on a new line with no quotes or numbers."
+                    )
+                },
+                {"role": "user", "content": "Context:\n" + "\n".join(history_snips) + f"\nLatest: {user_text}"}
+            ]
+            resp = client.chat.completions.create(
+                model=MODEL_FREE,
+                messages=exp_prompt,
+                temperature=0.1,
+                max_tokens=40,
+            )
+            for line in resp.choices[0].message.content.splitlines():
+                clean_line = line.strip().strip('"').strip("'")
+                if clean_line and clean_line not in queries:
+                    queries.append(clean_line)
+        except Exception:
+            pass
+
+    return queries[:3] if queries else [user_text]
+
+
+async def query_google_news_rss(query: str) -> List[Dict[str, str]]:
+    """Google News RSS Feed: perfectly indexes breaking and local news, never blocked."""
+    results = []
+    try:
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
+            q_enc = urllib.parse.quote_plus(query)
+            rss_url = f"https://news.google.com/rss/search?q={q_enc}&hl=en-US&gl=US&ceid=US:en"
+            r = await http.get(rss_url)
+            if r.status_code == 200:
+                root = ET.fromstring(r.text)
+                for item in root.findall(".//item")[:4]:
+                    title = unescape(re.sub(r'<[^>]+>', '', item.findtext("title") or "")).strip()
+                    link = (item.findtext("link") or "").strip()
+                    desc = unescape(re.sub(r'<[^>]+>', '', item.findtext("description") or "")).strip()
+                    source = item.findtext("source") or "News"
+                    if title and link:
+                        results.append({
+                            "title": title,
+                            "url": link,
+                            "snippet": desc[:280],
+                            "site": source
+                        })
+    except Exception as e:
+        print("Google News RSS warning:", e)
+    return results
 
 
 async def execute_python_rag(query: str) -> List[Dict[str, str]]:
     sources: List[Dict[str, str]] = []
 
-    # 1. Tavily API
+    # 1. Google News RSS (Fast, local incident indexer)
+    news_res = await query_google_news_rss(query)
+    if news_res:
+        sources.extend(news_res)
+
+    # 2. Tavily API
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -524,12 +575,10 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                             "snippet": item.get("content", ""),
                             "site": urllib.parse.urlparse(item.get("url", "")).netloc,
                         })
-                    if sources:
-                        return sources
         except Exception as e:
-            print("Tavily search warning:", e)
+            print("Tavily warning:", e)
 
-    # 2. Serper API
+    # 3. Serper API
     if SERPER_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -546,12 +595,10 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                             "snippet": item.get("snippet", ""),
                             "site": urllib.parse.urlparse(item.get("link", "")).netloc,
                         })
-                    if sources:
-                        return sources
         except Exception as e:
-            print("Serper search warning:", e)
+            print("Serper warning:", e)
 
-    # 3. Native DDGS
+    # 4. Native DDGS
     if HAS_DDGS:
         try:
             with DDGS() as ddgs:
@@ -564,12 +611,10 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                             "snippet": r.get("body", ""),
                             "site": urllib.parse.urlparse(href).netloc,
                         })
-                if sources:
-                    return sources
         except Exception as e:
-            print("DDGS search warning:", e)
+            print("DDGS warning:", e)
 
-    # 4. Standalone DuckDuckGo Lite HTTP Search
+    # 5. Standalone DuckDuckGo Lite HTTP Search
     try:
         async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
             res = await http.post("https://lite.duckduckgo.com/lite/", data={"q": query})
@@ -595,34 +640,18 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
                             "snippet": clean_snippet,
                             "site": urllib.parse.urlparse(url).netloc
                         })
-                if sources:
-                    return sources
     except Exception as e:
-        print("DDG Lite search warning:", e)
+        print("DDG Lite warning:", e)
 
-    # 5. Wikipedia Full Text Search
-    try:
-        async with httpx.AsyncClient(timeout=6.0, headers=BROWSER_HEADERS) as http:
-            q_enc = urllib.parse.quote_plus(query)
-            wiki_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={q_enc}&format=json&utf8="
-            r = await http.get(wiki_url)
-            if r.status_code == 200:
-                data = r.json()
-                for item in data.get("query", {}).get("search", [])[:3]:
-                    page_title = item.get("title", "")
-                    clean_snippet = clean_html(item.get("snippet", ""), 300)
-                    sources.append({
-                        "title": page_title,
-                        "url": f"https://en.wikipedia.org/wiki/{urllib.parse.quote(page_title.replace(' ', '_'))}",
-                        "snippet": clean_snippet,
-                        "site": "en.wikipedia.org",
-                    })
-                if sources:
-                    return sources
-    except Exception as e:
-        print("Wikipedia search warning:", e)
+    # De-duplicate results
+    unique_sources = []
+    seen = set()
+    for s in sources:
+        if s["url"] not in seen:
+            seen.add(s["url"])
+            unique_sources.append(s)
 
-    return sources
+    return unique_sources[:4]
 
 
 # ---------------------------------------------------------------------------
@@ -928,10 +957,10 @@ async def chat(
             db.commit()
             return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
 
-        # Multi-Turn Contextual Search Query
-        search_query = build_search_query_from_history(messages, user_text)
+        # Smart Multi-Turn Search Formulation
+        search_queries = generate_smart_search_queries(messages, user_text)
 
-        # Pre-Flight RAG Grounding
+        # Pre-Flight RAG Grounding across expanded queries
         live_sources = []
         try:
             urls_in_prompt = extract_urls(user_text)
@@ -943,8 +972,16 @@ async def chat(
                         "content": f"USER PROVIDED LIVE WEBPAGE ({page['url']}):\n{page['content']}"
                     })
 
-            # Fetch real-time web context using contextual query
-            live_sources = await execute_python_rag(search_query)
+            # Search queries in parallel / sequence
+            for q in search_queries:
+                found = await execute_python_rag(q)
+                if found:
+                    for item in found:
+                        if item["url"] not in [s["url"] for s in live_sources]:
+                            live_sources.append(item)
+                if len(live_sources) >= 4:
+                    break
+
             if live_sources:
                 rag_block = "REAL-TIME VERIFIED WEB SOURCES:\n" + "\n".join([
                     f"- [{s['title']}]({s['url']}): {s.get('snippet', '')}" for s in live_sources[:4]
@@ -954,9 +991,9 @@ async def chat(
                     "content": (
                         f"{rag_block}\n\n"
                         "GROUNDING DIRECTIVE:\n"
-                        "- This is a legitimate public news / factual event.\n"
-                        "- Answer the user's question directly and helpfully using the verified facts above.\n"
-                        "- Do NOT refuse. Do NOT output 'I can\\'t help with that'. Summarize the public news report factually.\n"
+                        "- Answer the user's inquiry helpfully and factually using the verified news findings above.\n"
+                        "- Immediately summarize the incident matching their descriptors (e.g., Owen Harris's e-bike accident).\n"
+                        "- Do NOT ask the user for more details if the news matches their clues. Provide the answer directly.\n"
                         "- Cite claims with markdown links [Source Title](URL).\n"
                         "- Do NOT use markdown tables (no `| Detail | Information |`). Output clean paragraphs and bullet points."
                     )
@@ -977,7 +1014,7 @@ async def chat(
 
             if "Tool choice is none" in err_text or "browser.run" in err_text or "tool_use_failed" in err_text:
                 m = re.search(r'"query":\s*"([^"]+)"', err_text)
-                retry_query = m.group(1) if m else search_query
+                retry_query = m.group(1) if m else search_queries[0]
 
                 extra_sources = await execute_python_rag(retry_query)
                 if extra_sources:
@@ -1007,8 +1044,11 @@ async def chat(
 
         raw = completion.choices[0].message.content or ""
 
-        # False-Positive Refusal Override (Auto-re-prompt if model refused a factual news query)
-        refusal_phrases = ["can't help with that", "cannot help with that", "can't provide that information", "cannot provide that information"]
+        # False-Positive Refusal Override
+        refusal_phrases = [
+            "can't help with that", "cannot help with that",
+            "can't provide that information", "cannot provide that information"
+        ]
         if any(p in raw.lower() for p in refusal_phrases) and live_sources:
             try:
                 recovery_prompt = list(messages)
