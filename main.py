@@ -44,9 +44,13 @@ except ImportError:
     HAS_DDGS = False
 
 # ---------------------------------------------------------------------------
-# Config & Environment Variables
+# Config & Environment Variables (With Multi-Key & OpenRouter Failover)
 # ---------------------------------------------------------------------------
-API_KEY = os.getenv("GROQ_API_KEY", "")
+API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+API_KEY_2 = os.getenv("GROQ_API_KEY_2", "").strip()
+API_KEY_3 = os.getenv("GROQ_API_KEY_3", "").strip()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
 APP_URL = os.getenv("APP_URL", "").rstrip("/")
@@ -71,12 +75,21 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
 
-if not API_KEY:
-    print("WARNING: GROQ_API_KEY is not set.")
+# Build pool of Groq clients for automatic rate-limit failover
+groq_clients: List[Groq] = []
+for k in [API_KEY, API_KEY_2, API_KEY_3]:
+    if k:
+        try:
+            groq_clients.append(Groq(api_key=k))
+        except Exception:
+            pass
+
+client = groq_clients[0] if groq_clients else None
+
+if not client and not OPENROUTER_API_KEY:
+    print("WARNING: No GROQ_API_KEY or OPENROUTER_API_KEY is set.")
 if not DATABASE_URL:
     print("WARNING: DATABASE_URL is not set.")
-
-client = Groq(api_key=API_KEY) if API_KEY else None
 
 MODEL_NAME = "Daedalus"
 FULL_IDENTITY = "Daedalus"
@@ -126,19 +139,87 @@ SYSTEM_PROMPT = (
 )
 
 CODING_EXPERT_DIRECTIVE = (
-    "PRINCIPAL SOFTWARE ENGINEER & CLAUDE OPUS / VERCEL UI DESIGNER MODE ACTIVE:\n"
-    "1. CODE COMPLETENESS & FENCING:\n"
-    "   - Write complete, production-ready, bug-free, and directly runnable code in a single response.\n"
-    "   - Do NOT try to read or list local files (`<tool_call>` is strictly forbidden). Generate the complete code directly.\n"
-    "   - NEVER use lazy placeholders like '// ... rest of code here' or '# TODO: implement'. Write the full implementation.\n"
-    "   - CRITICAL FORMATTING: You MUST wrap all code inside triple-backtick markdown fences with the language identifier (e.g. ```html, ```python, ```javascript) and close with ```. NEVER output raw code without ``` fences.\n"
+    "PRINCIPAL SOFTWARE ENGINEER & CLAUDE ARTIFACTS / VERCEL v0 UI DESIGNER MODE ACTIVE:\n"
+    "1. PRODUCT THINKING & FEATURE DEPTH (DO NOT BUILD BAREBONES SKELETONS):\n"
+    "   - Never build the bare minimum. Think like a Principal Product Designer at Linear, Vercel, or Raycast.\n"
+    "   - Add rich, applicable interactive features that make the app genuinely useful in the real world:\n"
+    "     • Clickable segmented mode tabs / navigation pills so users can switch modes or views directly.\n"
+    "     • Clean Settings Modals or collapsible drawers (tuck configuration inputs inside a sleek modal/drawer triggered by a gear icon button instead of dumping raw number inputs onto the main screen).\n"
+    "     • Live Stats & Analytics summary cards (e.g., completed sessions, focus time today, streak counters, completion progress bars).\n"
+    "     • Rich list management: filter tabs (All / Active / Completed), priority badges (High / Med / Low), keyboard shortcuts (Enter to submit, Space to toggle), and empty-state illustrations.\n"
     "2. OPUS-GRADE FRONTEND STACK (MANDATORY FOR ALL HTML/CSS/JS WEB APPS):\n"
-    "   - ALWAYS load Tailwind CSS CDN (`<script src=\"https://cdn.tailwindcss.com\"></script>`) and Google Fonts (`Inter` and `JetBrains Mono`) in the `<head>`.\n"
-    "   - ALWAYS style EVERY `<button>`, `<input>`, and card with Tailwind utility classes so there is NEVER an unstyled default white/gray browser button or raw input.\n"
-    "   - Remove ugly default number input spinner arrows using CSS (`input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; } input[type=number] { -moz-appearance: textfield; }`).\n"
-    "   - For dark/glassmorphic UIs: Use an obsidian background (`bg-[#07070a] text-zinc-100 min-h-screen flex items-center justify-center p-4 sm:p-8 relative overflow-x-hidden`) with 2 glowing ambient background blobs (`fixed -z-10 w-96 h-96 bg-indigo-600/20 rounded-full blur-[120px] top-10 left-10` and `fixed -z-10 w-96 h-96 bg-emerald-500/15 rounded-full blur-[120px] bottom-10 right-10`), and place content inside true glassmorphic cards (`bg-zinc-900/70 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl p-6 sm:p-8`).\n"
-    "   - For timers/dashboards: Include an animated SVG circular progress ring around the timer readout, mode pill badges, centered gradient action buttons (`bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white font-semibold px-6 py-2.5 rounded-xl shadow-lg shadow-indigo-500/25 transition-all active:scale-95`), styled secondary buttons (`bg-white/10 hover:bg-white/15 text-white px-5 py-2.5 rounded-xl border border-white/10 transition`), and inline flex rows for task inputs + Add buttons."
+    "   - ALWAYS load Tailwind CSS CDN (`<script src=\"https://cdn.tailwindcss.com\"></script>`), Lucide Icons (`<script src=\"https://unpkg.com/lucide@latest\"></script>`), and Google Fonts (`Inter` and `JetBrains Mono`) in the `<head>`.\n"
+    "   - Call `if (window.lucide) lucide.createIcons();` after rendering DOM updates so vector icons render crisply.\n"
+    "   - Style EVERY `<button>`, `<input>`, `<select>`, and badge with Tailwind utility classes so there is NEVER an unstyled default browser button.\n"
+    "   - Hide ugly default number input spinner arrows (`input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }`).\n"
+    "   - Use an obsidian background (`bg-[#07070b] text-zinc-100 min-h-screen relative overflow-x-hidden`) with ambient glowing background orbs (`fixed -z-10 w-[28rem] h-[28rem] bg-indigo-600/20 rounded-full blur-[130px]` and `bg-violet-500/15 blur-[130px]`), and true glassmorphic cards (`bg-zinc-900/65 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl`).\n"
+    "   - For timers/metrics: Build a large animated SVG circular progress ring (`<svg>` with `<circle>` using `stroke-dasharray`, `stroke-dashoffset`, and `stroke-linecap=\"round\"` with a smooth `transition-all duration-700`) surrounding a `font-mono tabular-nums` readout.\n"
+    "3. CODE COMPLETENESS & FENCING:\n"
+    "   - Write 100% complete, directly runnable code with ZERO placeholders (`// TODO` or `// rest of code` are strictly forbidden).\n"
+    "   - CRITICAL: Wrap all code inside triple-backtick markdown fences with the language identifier (` ```html ... ``` ` or ` ```python ... ``` `)."
 )
+
+# ---------------------------------------------------------------------------
+# Multi-Key Groq + OpenRouter Failover Caller
+# ---------------------------------------------------------------------------
+def call_llm_with_failover(
+    model: str,
+    messages: List[dict],
+    temperature: float = 0.3,
+    max_tokens: int = 8192,
+) -> str:
+    """
+    Tries all configured GROQ_API_KEYs in order. If all Groq keys hit a 429 rate limit
+    and OPENROUTER_API_KEY is set, automatically fails over to OpenRouter's free endpoint.
+    """
+    last_err = None
+    for idx, g_client in enumerate(groq_clients):
+        try:
+            comp = g_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return comp.choices[0].message.content or ""
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            # If rate limited (429) or quota exceeded, try the next key
+            if "429" in err_str or "rate_limit" in err_str or "quota" in err_str or "tokens per" in err_str:
+                print(f"Groq key #{idx + 1} hit rate limit, failing over...")
+                continue
+            else:
+                raise e
+
+    # Optional OpenRouter Free Failover if all Groq keys are rate-limited
+    if OPENROUTER_API_KEY:
+        try:
+            or_model = f"{model}:free" if not model.endswith(":free") else model
+            with httpx.Client(timeout=60.0) as http:
+                r = http.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": or_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    },
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    return data["choices"][0]["message"]["content"] or ""
+        except Exception as or_err:
+            print(f"OpenRouter failover notice: {or_err}")
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("No LLM API keys configured.")
+
 
 # ---------------------------------------------------------------------------
 # Database & Models
@@ -275,7 +356,7 @@ def require_verified(user: User) -> None:
 
 
 # ---------------------------------------------------------------------------
-# TIER CAPABILITIES & REASONING LEVEL ENFORCEMENT
+# TIER CAPABILITIES & UN-THROTTLED TOKEN BUDGETS
 # ---------------------------------------------------------------------------
 def resolve_model_for_user(plan: str, requested_model: Optional[str] = None) -> str:
     user_plan = (plan or "free").lower()
@@ -306,13 +387,17 @@ def get_reasoning_effort_for_plan(plan: str) -> str:
     return "low"
 
 
-def get_max_tokens_for_plan(plan: str) -> int:
+def get_max_tokens_for_plan(plan: str, is_coding: bool = False) -> int:
+    """
+    Un-throttles output tokens on Plus (16,384) and Premium (32,768) so internal
+    chain-of-thought reasoning never starves large 600-line single-file web apps.
+    """
     user_plan = (plan or "free").lower()
     if user_plan == "premium":
-        return 8192
+        return 32768 if is_coding else 16384
     if user_plan == "plus":
-        return 4096
-    return 2048
+        return 16384 if is_coding else 8192
+    return 4096
 
 
 def can_use_images(plan: str) -> bool:
@@ -575,14 +660,48 @@ def is_coding_or_logic_query(text: str) -> bool:
         "function", "variable", "bug", "error", "traceback", "exception",
         "syntax", "compile", "algorithm", "regex", "json", "api endpoint",
         "write a program", "make a website", "build a game", "debug", "fix this",
-        "single-file", "app with"
+        "single-file", "app with", "pomodoro", "tracker", "dashboard", "calculator"
     ]
     return any(k in lower for k in coding_keywords)
 
 
+def generate_product_ux_blueprint(user_text: str) -> Optional[str]:
+    """
+    Stage 1 of the Flipped Pipeline:
+    Expands a brief coding/UI prompt into a comprehensive Claude-Artifacts-level Product & UX
+    Specification before the Master Builder writes the code.
+    """
+    try:
+        spec_prompt = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a Principal Product Manager & Staff UI/UX Architect at Linear/Vercel.\n"
+                    "The user is asking for a software application or UI.\n"
+                    "Output a concise, high-density Product & Interactive UX Blueprint (under 220 words) that expands their request into a 10/10 real-world application:\n"
+                    "1. INTERACTIVE ARCHITECTURE: Specify clickable segmented mode/view tabs, keyboard shortcuts, and a clean Settings Modal or collapsible drawer (so raw config inputs are tucked inside a modal instead of cluttering the main view).\n"
+                    "2. RICH APPLICABLE FEATURES: Specify live stats/analytics summary cards (streaks, totals, completion progress bar), category/priority badges, filter pills (All/Active/Done), toast feedback notifications, and localStorage state recovery.\n"
+                    "3. VISUAL COMPONENTS: Specify Tailwind CSS classes, Lucide vector icons (`data-lucide`), an animated SVG circular progress ring or visual chart if applicable, and ambient glowing background blobs behind glassmorphic cards.\n"
+                    "Output ONLY the blueprint bullet points—no code yet."
+                )
+            },
+            {"role": "user", "content": user_text}
+        ]
+        blueprint = call_llm_with_failover(
+            model=MODEL_FREE,
+            messages=spec_prompt,
+            temperature=0.2,
+            max_tokens=350,
+        )
+        return strip_thinking_and_tool_tags(blueprint)
+    except Exception as e:
+        print(f"Product blueprint notice: {e}")
+        return None
+
+
 def maybe_update_user_memory(db: Session, user: User, user_text: str):
     """Automatically extracts persistent user facts/preferences for Plus & Premium users."""
-    if (user.plan or "free").lower() not in ("plus", "premium") or not client:
+    if (user.plan or "free").lower() not in ("plus", "premium") or not (client or OPENROUTER_API_KEY):
         return
     lower = user_text.lower()
     memory_triggers = [
@@ -593,7 +712,7 @@ def maybe_update_user_memory(db: Session, user: User, user_text: str):
         return
     try:
         current_mem = (user.memory or "").strip()
-        resp = client.chat.completions.create(
+        new_note = call_llm_with_failover(
             model=MODEL_FREE,
             messages=[
                 {
@@ -607,8 +726,7 @@ def maybe_update_user_memory(db: Session, user: User, user_text: str):
             ],
             temperature=0.1,
             max_tokens=40,
-        )
-        new_note = (resp.choices[0].message.content or "").strip()
+        ).strip()
         if new_note and new_note not in current_mem:
             updated = (current_mem + " | " + new_note).strip(" |")
             user.memory = updated[:4000]
@@ -906,7 +1024,7 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
         queries.append(f"{cleaned} tiktok meme")
         queries.append(f"{cleaned} reddit drama")
 
-    if client and len(user_turns) >= 1:
+    if (client or OPENROUTER_API_KEY) and len(user_turns) >= 1:
         try:
             history_snips = [f"{m['role']}: {m['content'][:120]}" for m in messages[-4:] if m.get("role") in ("user", "assistant")]
             exp_prompt = [
@@ -920,13 +1038,13 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
                 },
                 {"role": "user", "content": "Context:\n" + "\n".join(history_snips) + f"\nLatest: {user_text}"}
             ]
-            resp = client.chat.completions.create(
+            raw_exp = call_llm_with_failover(
                 model=MODEL_FREE,
                 messages=exp_prompt,
                 temperature=0.1,
                 max_tokens=40,
             )
-            for line in resp.choices[0].message.content.splitlines():
+            for line in raw_exp.splitlines():
                 clean_line = line.strip().strip('"').strip("'")
                 if clean_line and clean_line not in queries:
                     queries.append(clean_line)
@@ -1367,7 +1485,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT (2-STAGE HIGH-REASONING ENGINE FOR PREMIUM)
+# CHAT ENDPOINT (PRODUCT ARCHITECT SPEC -> UN-THROTTLED 16K/32K MASTER BUILDER)
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -1378,7 +1496,7 @@ async def chat(
     db: Session = Depends(get_db),
 ):
     require_verified(user)
-    if not client:
+    if not client and not OPENROUTER_API_KEY:
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
     try:
@@ -1402,7 +1520,8 @@ async def chat(
 
         user_plan = (user.plan or "free").lower()
         active_model = resolve_model_for_user(user_plan, model)
-        max_out_tokens = get_max_tokens_for_plan(user_plan)
+        coding_mode = is_coding_or_logic_query(user_text)
+        max_out_tokens = get_max_tokens_for_plan(user_plan, is_coding=coding_mode)
 
         messages = build_messages_for_conversation(db, user, conv.id)
         lowered_text = user_text.lower().strip()
@@ -1414,9 +1533,20 @@ async def chat(
             db.commit()
             return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
 
-        coding_mode = is_coding_or_logic_query(user_text)
+        # Stage 1 for Plus & Premium Coding: Generate Claude-Artifacts Product & UX Blueprint
         if coding_mode:
-            messages.append({"role": "system", "content": CODING_EXPERT_DIRECTIVE})
+            blueprint_section = ""
+            if user_plan in ("plus", "premium"):
+                ux_blueprint = generate_product_ux_blueprint(user_text)
+                if ux_blueprint:
+                    blueprint_section = (
+                        f"\n\nMANDATORY PRODUCT & UX ARCHITECTURE BLUEPRINT TO IMPLEMENT:\n{ux_blueprint}\n"
+                        "Implement EVERY feature, tab, modal, stat card, and visual polish detail in this blueprint in a single comprehensive file."
+                    )
+            messages.append({
+                "role": "system",
+                "content": CODING_EXPERT_DIRECTIVE + blueprint_section
+            })
 
         live_sources = []
         search_queries = [user_text]
@@ -1472,9 +1602,9 @@ async def chat(
             except Exception as rag_err:
                 print(f"RAG pre-flight non-fatal warning: {rag_err}")
 
-        # Stage 1: Primary Logic & Architecture Generation
+        # Stage 2: Master Builder Generation (with Multi-Key & OpenRouter Failover)
         try:
-            completion = client.chat.completions.create(
+            raw = call_llm_with_failover(
                 model=active_model,
                 messages=messages,
                 temperature=0.3,
@@ -1508,7 +1638,7 @@ async def chat(
                     )
                 })
 
-                completion = client.chat.completions.create(
+                raw = call_llm_with_failover(
                     model=active_model,
                     messages=messages,
                     temperature=0.3,
@@ -1516,49 +1646,6 @@ async def chat(
                 )
             else:
                 raise first_err
-
-        raw = completion.choices[0].message.content or ""
-
-        # Stage 2: Premium Opus-Level UI & Code Overhaul Pass (Runs on MODEL_PAID with Reasoning: high)
-        if user_plan == "premium" and coding_mode and len(raw) > 120:
-            try:
-                review_messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Reasoning: high\n"
-                            f"{SYSTEM_PROMPT}\n"
-                            f"{CODING_EXPERT_DIRECTIVE}\n"
-                            "You are the Stage-2 Principal UI/UX Designer & Code Polisher.\n"
-                            "Your job:\n"
-                            "1. Keep 100% of the working JavaScript/Python logic, state machine, AudioContext, and localStorage features from the Stage-1 draft.\n"
-                            "2. If this is an HTML/CSS/JS web app, COMPLETELY OVERHAUL the visual design using Tailwind CSS CDN (`<script src=\"https://cdn.tailwindcss.com\"></script>`), Google Fonts (`Inter` & `JetBrains Mono`), ambient glowing background orbs (`fixed -z-10 w-96 h-96 bg-indigo-600/20 rounded-full blur-[120px]`), glassmorphic cards (`bg-zinc-900/70 backdrop-blur-2xl border border-white/10 rounded-3xl shadow-2xl`), an SVG circular progress ring for any timer, and sleek gradient buttons so ZERO unstyled default browser buttons or ugly number inputs exist.\n"
-                            "3. NEVER output `<tool_call>` or `<function=...>`. Wrap the final code inside a single ```html ... ``` (or ```python ... ```) markdown code block."
-                        )
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Original User Prompt:\n{user_text}\n\nStage-1 Working Code Draft to Upgrade:\n{raw}"
-                    }
-                ]
-                review_comp = client.chat.completions.create(
-                    model=MODEL_PAID,
-                    messages=review_messages,
-                    temperature=0.25,
-                    max_tokens=max_out_tokens,
-                )
-                reviewed_raw = strip_thinking_and_tool_tags(review_comp.choices[0].message.content or "")
-                # Only accept Stage 2 if it contains valid code and zero hallucinated tool tags
-                if (
-                    reviewed_raw
-                    and len(reviewed_raw) > 250
-                    and "<tool_call>" not in reviewed_raw
-                    and "<function=" not in reviewed_raw
-                    and not is_refusal_message(reviewed_raw)
-                ):
-                    raw = reviewed_raw
-            except Exception as rev_err:
-                print(f"Premium Stage-2 review notice: {rev_err}")
 
         # Automatic Single-Turn Refusal Loop Escape
         if is_refusal_message(raw) and not is_slur_or_restricted_name(user_text):
@@ -1576,13 +1663,12 @@ async def chat(
                     {"role": "system", "content": fresh_system},
                     {"role": "user", "content": user_text},
                 ]
-                fresh_comp = client.chat.completions.create(
+                raw = call_llm_with_failover(
                     model=active_model,
                     messages=fresh_messages,
                     temperature=0.3,
                     max_tokens=max_out_tokens,
-                )
-                raw = fresh_comp.choices[0].message.content or raw
+                ) or raw
             except Exception as retry_err:
                 print(f"Fresh single-turn retry notice: {retry_err}")
 
@@ -1600,12 +1686,12 @@ async def chat(
                         "Do not deny the SpaceX launch and do not mention water-spume. Confirm the SpaceX Falcon 9 launch factually."
                     )
                 })
-                retry_completion = client.chat.completions.create(
+                raw = call_llm_with_failover(
                     model=active_model,
                     messages=recovery_prompt,
                     temperature=0.2,
-                )
-                raw = retry_completion.choices[0].message.content or raw
+                    max_tokens=max_out_tokens,
+                ) or raw
             except Exception as override_err:
                 print(f"Denial override warning: {override_err}")
 
@@ -1644,7 +1730,7 @@ async def upload_image(
             {"error": "Image & screenshot uploads require Plus ($4/mo) or Premium ($8/mo). Upgrade in Plans."},
             status_code=403,
         )
-    if not client:
+    if not client and not OPENROUTER_API_KEY:
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
     try:
@@ -1675,7 +1761,7 @@ async def upload_image(
         b64 = base64.b64encode(content).decode("utf-8")
         data_url = f"data:{mime};base64,{b64}"
 
-        vision_completion = client.chat.completions.create(
+        image_description = call_llm_with_failover(
             model=VISION_MODEL,
             messages=[{
                 "role": "user",
@@ -1695,8 +1781,7 @@ async def upload_image(
             }],
             temperature=0.2,
             max_tokens=1000,
-        )
-        image_description = vision_completion.choices[0].message.content.strip()
+        ).strip()
 
         note = f"[User uploaded an image/screenshot]\nExtracted Image Details:\n{image_description}"
         if caption and caption.strip():
@@ -1713,10 +1798,10 @@ async def upload_image(
         messages = build_messages_for_conversation(db, user, conv.id)
         messages.append({"role": "system", "content": CODING_EXPERT_DIRECTIVE})
         active_model = resolve_model_for_user(user_plan, model)
-        max_out_tokens = get_max_tokens_for_plan(user_plan)
+        max_out_tokens = get_max_tokens_for_plan(user_plan, is_coding=True)
 
         try:
-            completion = client.chat.completions.create(
+            raw = call_llm_with_failover(
                 model=active_model,
                 messages=messages,
                 temperature=0.3,
@@ -1729,7 +1814,7 @@ async def upload_image(
                     "role": "system",
                     "content": "Do NOT emit tool calls or browser.run. Answer directly in conversational text."
                 })
-                completion = client.chat.completions.create(
+                raw = call_llm_with_failover(
                     model=active_model,
                     messages=messages,
                     temperature=0.3,
@@ -1738,7 +1823,6 @@ async def upload_image(
             else:
                 raise first_err
 
-        raw = completion.choices[0].message.content or ""
         final = sanitize_response(raw)
         db.add(Message(conversation_id=conv.id, role="assistant", content=final))
         conv.updated_at = datetime.now(timezone.utc)
