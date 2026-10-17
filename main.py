@@ -3,6 +3,10 @@ import re
 import secrets
 import base64
 import io
+import imaplib
+import email
+from email.header import decode_header
+import asyncio
 import urllib.parse
 import xml.etree.ElementTree as ET
 from html import unescape
@@ -10,7 +14,6 @@ from datetime import datetime, timedelta, timezone, date
 from typing import List, Optional, Dict, Any
 
 import httpx
-import stripe
 from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -54,21 +57,19 @@ FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+# Cash App & Automated Email Receipt Verification Config
+CASHAPP_TAG = os.getenv("CASHAPP_TAG", "").strip()
+EMAIL_USER = os.getenv("EMAIL_USER", "").strip()
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "").replace(" ", "").strip()
+EMAIL_IMAP_HOST = os.getenv("EMAIL_IMAP_HOST", "imap.gmail.com").strip()
+
 # Search Grounding API Keys (Optional)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRICE_PLUS = os.getenv("STRIPE_PRICE_PLUS", "")
-STRIPE_PRICE_PREMIUM = os.getenv("STRIPE_PRICE_PREMIUM", "")
-
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 30
-
-if STRIPE_SECRET_KEY:
-    stripe.api_key = STRIPE_SECRET_KEY
 
 if not API_KEY:
     print("WARNING: GROQ_API_KEY is not set.")
@@ -98,7 +99,7 @@ SYSTEM_PROMPT = (
     "4. Maintain a helpful, natural, conversational, and factually accurate tone.\n"
     "5. GREETING & NAME RULES:\n"
     "   - NEVER greet users using website domain names, URLs, or email handles (e.g., NEVER say 'Hey buxai.space!').\n"
-    "   - Do NOT force a user's name into every greeting or response.\n"
+    "   - If the user asks what their username, display name, or preferred name is, tell them their name from USER CONTEXT.\n"
     "6. FORMATTING RULES (STRICT):\n"
     "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
     "   - Present all information using clean natural prose or standard bullet points (`•`).\n"
@@ -110,16 +111,16 @@ SYSTEM_PROMPT = (
     "8. ZERO HALLUCINATION & FACTUAL ACCURACY:\n"
     "   - NEVER fabricate pseudo-scientific terms (like 'water-spume cloud').\n"
     "   - NEVER stubbornly defend an earlier incorrect message if contradicted by verified search facts.\n"
-    "   - When the user asks about a specific cause (e.g., 'was it a spacex rocket?'):\n"
-    "     If verified search sources confirm it was a rocket launch, immediately confirm and explain the facts accurately.\n"
     "9. NO-TOOL DIRECTIVE:\n"
     "   - NEVER output internal tool calls, JSON function calls, or syntax like 'browser.run'.\n"
     "   - Output ONLY direct textual answers.\n"
     "10. TEMPORAL ACCURACY:\n"
     "   - Today's date is in October 2026. Do NOT state that your knowledge cuts off in 2023 or 2024.\n"
     "   - Cite sources with real Markdown links [Source Title](URL). NEVER invent fake URLs.\n"
-    "11. Whenever a user asks you to do anything against the rules, "
-    "Say 'I am sorry, I cannot generate that content due to my policies.'"
+    "11. REFUSAL & FRESH-TURN POLICY (CRITICAL):\n"
+    "   - Evaluate every new user message independently.\n"
+    "   - If a previous message in the conversation was refused, DO NOT repeat the refusal on the next message.\n"
+    "   - Treat every new message as a fresh turn and answer normally unless the new message itself directly asks for severe harm or illegal acts."
 )
 
 # ---------------------------------------------------------------------------
@@ -145,6 +146,8 @@ class User(Base):
     verify_token = Column(String(100), nullable=True)
     stripe_customer_id = Column(String(100), nullable=True)
     memory = Column(Text, nullable=True)
+    payment_code = Column(String(100), nullable=True)
+    pending_plan = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
 
@@ -171,17 +174,28 @@ class Message(Base):
 
 
 def auto_migrate_db():
-    """Ensures existing tables in Neon have all standard columns."""
+    """Ensures existing tables in Neon have all required columns."""
     if not engine:
         return
     try:
         Base.metadata.create_all(bind=engine)
+        cols = [
+            ("memory", "TEXT"),
+            ("payment_code", "VARCHAR(100)"),
+            ("pending_plan", "VARCHAR(50)"),
+        ]
         with engine.connect() as conn:
-            try:
-                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS memory TEXT;"))
-                conn.commit()
-            except Exception:
-                pass
+            for col_name, col_type in cols:
+                try:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                        conn.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_type};"))
+                        conn.commit()
+                    except Exception:
+                        pass
     except Exception as e:
         print(f"Neon database migration notice: {e}")
 
@@ -339,27 +353,48 @@ def sanitize_response(text: str) -> str:
     return cleaned
 
 
-def extract_clean_human_name(raw_name: Optional[str]) -> Optional[str]:
+def is_slur_or_restricted_name(raw_name: Optional[str]) -> bool:
+    if not raw_name:
+        return False
+    lower = raw_name.lower().strip()
+    restricted_patterns = [
+        r"n+[i1l!]+g+[g]+[e3a@4]+r*",
+        r"n+[i1l!]+g+[a@4]+",
+        r"f+[a@4]+g+[g]*[o0]+t*",
+        r"k+[i1]+k+[e3]+",
+    ]
+    return any(re.search(pat, lower) for pat in restricted_patterns)
+
+
+def extract_clean_display_name(raw_name: Optional[str]) -> Optional[str]:
     if not raw_name:
         return None
     name = raw_name.strip()
     if any(suffix in name.lower() for suffix in [".space", ".com", ".org", ".net", ".io", ".ai", ".app", ".dev", ".co"]):
         return None
-    if "@" in name or "/" in name or "_" in name:
+    if "@" in name or "/" in name:
         return None
-    if not re.match(r"^[A-Za-z\s'\-]+$", name) or len(name) < 2:
+    if len(name) < 1 or len(name) > 100:
         return None
     return name
 
 
 def user_context_block(user: User) -> str:
     parts = []
-    clean_name = extract_clean_human_name(user.display_name)
-    if clean_name and clean_name.lower() != "friend":
+    if is_slur_or_restricted_name(user.display_name):
         parts.append(
-            f"The user's real name is {clean_name}. You may address them by name occasionally when natural, "
-            "but do not force their name into greetings or every response."
+            "The user's display name in settings is currently set to an offensive/restricted word. "
+            "Do NOT repeat the slur, and do NOT refuse normal messages—if they ask what their name/username is, "
+            "politely let them know their display name is set to a restricted word and they can change it using the edit button in the header."
         )
+    else:
+        clean_name = extract_clean_display_name(user.display_name)
+        if clean_name:
+            parts.append(
+                f"The user's display name / username is '{clean_name}'. "
+                f"If the user asks 'what is my username?' or 'what name did I set for you to call me?', "
+                f"tell them directly that their name is '{clean_name}'."
+            )
 
     if user.birthday:
         parts.append(
@@ -369,6 +404,26 @@ def user_context_block(user: User) -> str:
     if user.memory and user.memory.strip():
         parts.append(f"Long-term notes about this user: {user.memory.strip()}")
     return " ".join(parts)
+
+
+def is_refusal_message(content: str) -> bool:
+    if not content:
+        return False
+    lower = content.lower().strip()
+    refusal_phrases = [
+        "i'm sorry, but i can't comply with that",
+        "i’m sorry, but i can’t comply with that",
+        "i cannot comply with that",
+        "i'm sorry, but i can't help with that",
+        "i’m sorry, but i can’t help with that",
+        "i'm sorry, i can't provide that information",
+        "i’m sorry, i can’t provide that information",
+        "i'm sorry, but i don't have that information",
+        "i’m sorry, but i don’t have that information",
+        "i am sorry, i cannot generate that content due to my policies",
+        "i'm sorry, i can't generate that content",
+    ]
+    return len(lower) < 180 and any(p in lower for p in refusal_phrases)
 
 
 def build_messages_for_conversation(db: Session, user: User, conversation_id: int) -> List[dict]:
@@ -387,7 +442,22 @@ def build_messages_for_conversation(db: Session, user: User, conversation_id: in
         f"USER CONTEXT:\n{user_context_block(user)}"
     )
     history = [{"role": "system", "content": system}]
-    for m in rows:
+
+    cleaned_rows = []
+    i = 0
+    while i < len(rows):
+        m = rows[i]
+        if m.role == "user" and (i + 1) < len(rows) and rows[i + 1].role == "assistant":
+            if is_refusal_message(rows[i + 1].content):
+                i += 2
+                continue
+        if m.role == "assistant" and is_refusal_message(m.content):
+            i += 1
+            continue
+        cleaned_rows.append(m)
+        i += 1
+
+    for m in cleaned_rows:
         history.append({"role": m.role, "content": m.content})
     return history
 
@@ -408,7 +478,7 @@ def make_title_from_text(text: str) -> str:
     return (t[:48] + "...") if len(t) > 48 else t
 
 
-async def send_verify_email(email: str, token: str) -> bool:
+async def send_verify_email(email_addr: str, token: str) -> bool:
     if not RESEND_API_KEY or not APP_URL:
         return False
     link = f"{APP_URL}/verify-email?token={token}"
@@ -422,7 +492,7 @@ async def send_verify_email(email: str, token: str) -> bool:
                 },
                 json={
                     "from": FROM_EMAIL,
-                    "to": [email],
+                    "to": [email_addr],
                     "subject": "Verify your AstroVectAI account",
                     "html": (
                         "<p>Welcome to Daedalus.</p>"
@@ -450,6 +520,123 @@ def user_public(user: User) -> dict:
         "default_model": resolve_model_for_user(plan),
         "can_switch_models": plan in ("plus", "premium"),
     }
+
+
+# ---------------------------------------------------------------------------
+# AUTOMATED CASH APP EMAIL RECEIPT VERIFICATION ENGINE
+# ---------------------------------------------------------------------------
+def decode_mime_Text(val: Optional[str]) -> str:
+    if not val:
+        return ""
+    decoded_parts = decode_header(val)
+    out = []
+    for part, enc in decoded_parts:
+        if isinstance(part, bytes):
+            out.append(part.decode(enc or "utf-8", errors="ignore"))
+        else:
+            out.append(str(part))
+    return "".join(out)
+
+
+def extract_email_body(msg: email.message.Message) -> str:
+    body_parts = []
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            cdisp = str(part.get("Content-Disposition") or "")
+            if ctype in ("text/plain", "text/html") and "attachment" not in cdisp:
+                try:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        text_chunk = payload.decode(charset, errors="ignore")
+                        if ctype == "text/html":
+                            text_chunk = re.sub(r"<[^>]+>", " ", text_chunk)
+                        body_parts.append(unescape(text_chunk))
+                except Exception:
+                    pass
+    else:
+        try:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                charset = msg.get_content_charset() or "utf-8"
+                text_chunk = payload.decode(charset, errors="ignore")
+                text_chunk = re.sub(r"<[^>]+>", " ", text_chunk)
+                body_parts.append(unescape(text_chunk))
+        except Exception:
+            pass
+    return " ".join(body_parts)
+
+
+def check_imap_for_cashapp_receipt(payment_code: str, expected_plan: str) -> Optional[str]:
+    """
+    Connects to Gmail/IMAP over SSL, checks recent Cash App emails from square.com / cash.app
+    for the user's unique payment_code and dollar amount ($4 for Plus, $8 for Premium).
+    Returns the verified plan name ('plus' or 'premium') if found, else None.
+    """
+    if not EMAIL_USER or not EMAIL_APP_PASSWORD or not payment_code:
+        return None
+
+    try:
+        mail = imaplib.IMAP4_SSL(EMAIL_IMAP_HOST, 993)
+        mail.login(EMAIL_USER, EMAIL_APP_PASSWORD)
+        mail.select("INBOX")
+
+        # Search for all messages and inspect the latest 30 emails
+        status, data = mail.search(None, "ALL")
+        if status != "OK" or not data or not data[0]:
+            mail.logout()
+            return None
+
+        msg_ids = data[0].split()
+        recent_ids = list(reversed(msg_ids[-30:]))
+
+        code_lower = payment_code.lower().strip()
+
+        for m_id in recent_ids:
+            res, msg_data = mail.fetch(m_id, "(RFC822)")
+            if res != "OK" or not msg_data:
+                continue
+
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+                    from_header = decode_mime_Text(msg.get("From", "")).lower()
+                    subject_header = decode_mime_Text(msg.get("Subject", ""))
+                    body_text = extract_email_body(msg)
+
+                    combined_text = f"{subject_header} {body_text}"
+                    combined_lower = combined_text.lower()
+
+                    # Verify sender is official Cash App / Square
+                    is_from_cashapp = any(
+                        domain in from_header
+                        for domain in ["square.com", "cash.app", "squareup.com"]
+                    )
+                    if not is_from_cashapp:
+                        continue
+
+                    # Verify the user's unique note code is in the email
+                    if code_lower not in combined_lower:
+                        continue
+
+                    # Verify it is a received payment (not a payment request or failure)
+                    if not any(w in combined_lower for w in ["sent you", "received", "paid you", "you got"]):
+                        continue
+
+                    # Check amount ($8+ grants Premium, $4+ grants Plus)
+                    if re.search(r"\$\s*(?:8|9|1\d)(?:\.00)?\b", combined_text):
+                        mail.logout()
+                        return "premium"
+                    if re.search(r"\$\s*[4567](?:\.00)?\b", combined_text):
+                        mail.logout()
+                        return "plus" if expected_plan == "plus" else "plus"
+
+        mail.logout()
+    except Exception as e:
+        print(f"Cash App IMAP check error: {e}")
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +724,20 @@ async def fetch_webpage_content(url: str, max_chars: int = 2500) -> Optional[Dic
     except Exception as e:
         print(f"Error reading {url}: {e}")
     return None
+
+
+def is_personal_or_account_query(text: str) -> bool:
+    lower = text.lower().strip()
+    personal_patterns = [
+        "my username", "my name", "call me", "who am i", "what about now",
+        "updated now", "my birthday", "my account", "my plan", "who are you",
+        "your name", "what is your name"
+    ]
+    if any(p in lower for p in personal_patterns):
+        return True
+    if len(lower.split()) <= 2 and not extract_urls(text):
+        return True
+    return False
 
 
 def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[str]:
@@ -1044,6 +1245,8 @@ async def chat(
         return JSONResponse({"error": "Server missing GROQ_API_KEY"}, status_code=500)
 
     try:
+        db.refresh(user)
+
         conv = get_user_conversation(db, user, conversation_id)
         user_text = message.strip()
         if not user_text:
@@ -1053,18 +1256,15 @@ async def chat(
         if msg_count == 0 and conv.title == "New chat":
             conv.title = make_title_from_text(user_text)
 
-        # Save user message
         db.add(Message(conversation_id=conv.id, role="user", content=user_text))
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
 
-        # Build conversation history
         messages = build_messages_for_conversation(db, user, conv.id)
         active_model = resolve_model_for_user(user.plan or "free", model)
 
         lowered_text = user_text.lower().strip()
 
-        # Identity test check
         if lowered_text in ["hey chatgpt", "hello chatgpt", "hi chatgpt", "chatgpt"]:
             final = "I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?"
             db.add(Message(conversation_id=conv.id, role="assistant", content=final))
@@ -1072,57 +1272,55 @@ async def chat(
             db.commit()
             return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
 
-        # Smart Multi-Turn Search Formulation
-        search_queries = generate_smart_search_queries(messages, user_text)
-
-        # Pre-Flight RAG Grounding across expanded queries
         live_sources = []
-        try:
-            urls_in_prompt = extract_urls(user_text)
-            for u in urls_in_prompt[:2]:
-                page = await fetch_webpage_content(u)
-                if page:
+        search_queries = [user_text]
+        if not is_personal_or_account_query(user_text):
+            try:
+                search_queries = generate_smart_search_queries(messages, user_text)
+                urls_in_prompt = extract_urls(user_text)
+                for u in urls_in_prompt[:2]:
+                    page = await fetch_webpage_content(u)
+                    if page:
+                        messages.append({
+                            "role": "system",
+                            "content": f"USER PROVIDED LIVE WEBPAGE / TIKTOK ({page['url']}):\n{page['content']}"
+                        })
+
+                for q in search_queries:
+                    found = await execute_python_rag(q)
+                    if found:
+                        for item in found:
+                            if item["url"] not in [s["url"] for s in live_sources]:
+                                live_sources.append(item)
+                    if len(live_sources) >= 4:
+                        break
+
+                if live_sources:
+                    formatted_sources = []
+                    for s in live_sources[:4]:
+                        snippet_or_body = s.get("content") or s.get("snippet", "")
+                        formatted_sources.append(
+                            f"Source: [{s['title']}]({s['url']})\n"
+                            f"Domain: {s.get('site', '')}\n"
+                            f"Content Excerpt:\n{snippet_or_body[:1200]}\n---"
+                        )
+
+                    rag_block = "REAL-TIME VERIFIED WEB SOURCES & ARTICLE CONTENTS:\n" + "\n".join(formatted_sources)
                     messages.append({
                         "role": "system",
-                        "content": f"USER PROVIDED LIVE WEBPAGE / TIKTOK ({page['url']}):\n{page['content']}"
+                        "content": (
+                            f"{rag_block}\n\n"
+                            "STRICT GROUNDING & ACCURACY DIRECTIVES:\n"
+                            "1. Base your answer directly on the verified article and social excerpts above when answering external factual questions.\n"
+                            "2. If asked about a creator, YouTuber, or meme trend, explain the actual online context. Do NOT invent fake slang definitions and do NOT lecture on reporting harassment.\n"
+                            "3. Directly answer the user's question without stalling or repeatedly asking for more details.\n"
+                            "4. Cite sources using clean markdown links [Source Title](URL).\n"
+                            "5. Do NOT use markdown tables (no `| Detail | Information |`). Output clean paragraphs and bullet points."
+                        )
                     })
+            except Exception as rag_err:
+                print(f"RAG pre-flight non-fatal warning: {rag_err}")
 
-            for q in search_queries:
-                found = await execute_python_rag(q)
-                if found:
-                    for item in found:
-                        if item["url"] not in [s["url"] for s in live_sources]:
-                            live_sources.append(item)
-                if len(live_sources) >= 4:
-                    break
-
-            if live_sources:
-                formatted_sources = []
-                for s in live_sources[:4]:
-                    snippet_or_body = s.get("content") or s.get("snippet", "")
-                    formatted_sources.append(
-                        f"Source: [{s['title']}]({s['url']})\n"
-                        f"Domain: {s.get('site', '')}\n"
-                        f"Content Excerpt:\n{snippet_or_body[:1200]}\n---"
-                    )
-
-                rag_block = "REAL-TIME VERIFIED WEB SOURCES & ARTICLE CONTENTS:\n" + "\n".join(formatted_sources)
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        f"{rag_block}\n\n"
-                        "STRICT GROUNDING & ACCURACY DIRECTIVES:\n"
-                        "1. Base your answer directly on the verified article and social excerpts above.\n"
-                        "2. If asked about a creator, YouTuber, or meme trend, explain the actual online context (comment section trolling, running jokes, or rumors). Do NOT invent fake slang definitions and do NOT lecture on reporting harassment.\n"
-                        "3. Directly answer the user's question without stalling or repeatedly asking for more details.\n"
-                        "4. Cite sources using clean markdown links [Source Title](URL).\n"
-                        "5. Do NOT use markdown tables (no `| Detail | Information |`). Output clean paragraphs and bullet points."
-                    )
-                })
-        except Exception as rag_err:
-            print(f"RAG pre-flight non-fatal warning: {rag_err}")
-
-        # Execute Completion with Automatic Recovery from tool_use_failed
         try:
             completion = client.chat.completions.create(
                 model=active_model,
@@ -1167,7 +1365,30 @@ async def chat(
 
         raw = completion.choices[0].message.content or ""
 
-        # False-Positive Denial Override (Checks if model denied a launch when sources proved it)
+        # Automatic Single-Turn Refusal Loop Escape
+        if is_refusal_message(raw) and not is_slur_or_restricted_name(user_text):
+            try:
+                now_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y at %H:%M UTC")
+                fresh_system = (
+                    f"{SYSTEM_PROMPT}\n\n"
+                    f"TEMPORAL REALITY: Today is {now_str}.\n"
+                    f"USER CONTEXT:\n{user_context_block(user)}\n\n"
+                    "DIRECTIVE: Answer the user's latest message directly and helpfully without refusing."
+                )
+                fresh_messages = [
+                    {"role": "system", "content": fresh_system},
+                    {"role": "user", "content": user_text},
+                ]
+                fresh_comp = client.chat.completions.create(
+                    model=active_model,
+                    messages=fresh_messages,
+                    temperature=0.3,
+                )
+                raw = fresh_comp.choices[0].message.content or raw
+            except Exception as retry_err:
+                print(f"Fresh single-turn retry notice: {retry_err}")
+
+        # False-Positive Denial Override
         sources_text = " ".join([s.get("content", "") + " " + s.get("title", "") for s in live_sources]).lower()
         if ("spacex" in sources_text or "rocket launch" in sources_text) and any(
             denial in raw.lower() for denial in ["wasn't a spacex", "not a spacex", "was not a spacex", "water-spume"]
@@ -1192,7 +1413,6 @@ async def chat(
 
         final = sanitize_response(raw)
 
-        # Save assistant message
         db.add(Message(conversation_id=conv.id, role="assistant", content=final))
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
@@ -1338,6 +1558,9 @@ async def reset(
     return JSONResponse({"status": "ok"})
 
 
+# ---------------------------------------------------------------------------
+# CASH APP CHECKOUT & AUTO-VERIFICATION ROUTES
+# ---------------------------------------------------------------------------
 @app.post("/create-checkout")
 async def create_checkout(
     plan: str = Form(...),
@@ -1348,74 +1571,67 @@ async def create_checkout(
     plan = plan.strip().lower()
     if plan not in ("plus", "premium"):
         return JSONResponse({"error": "Invalid plan"}, status_code=400)
-    if not STRIPE_SECRET_KEY:
-        return JSONResponse({"error": "Payments not configured yet"}, status_code=500)
+    if not CASHAPP_TAG:
+        return JSONResponse({"error": "CASHAPP_TAG is not configured in environment variables"}, status_code=500)
 
-    price_id = STRIPE_PRICE_PLUS if plan == "plus" else STRIPE_PRICE_PREMIUM
-    if not price_id:
-        return JSONResponse({"error": f"Stripe price for {plan} not set"}, status_code=500)
-    if not APP_URL:
-        return JSONResponse({"error": "APP_URL not set"}, status_code=500)
+    # Generate or update the user's unique payment verification code
+    if not user.payment_code:
+        user.payment_code = f"DAED-{user.id}-{secrets.token_hex(2).upper()}"
+    user.pending_plan = plan
+    db.commit()
 
-    if not user.stripe_customer_id:
-        customer = stripe.Customer.create(
-            email=user.email,
-            metadata={"user_id": str(user.id)},
-        )
-        user.stripe_customer_id = customer.id
-        db.commit()
+    amount = 4 if plan == "plus" else 8
+    clean_tag = CASHAPP_TAG.lstrip("$")
+    encoded_note = urllib.parse.quote(user.payment_code)
 
-    session = stripe.checkout.Session.create(
-        customer=user.stripe_customer_id,
-        mode="subscription",
-        line_items=[{"price": price_id, "quantity": 1}],
-        success_url=f"{APP_URL}/?checkout=success",
-        cancel_url=f"{APP_URL}/?checkout=cancel",
-        metadata={"user_id": str(user.id), "plan": plan},
-        subscription_data={"metadata": {"user_id": str(user.id), "plan": plan}},
-        payment_method_types=["card"],
+    # Auto-load amount and note into Cash App web & mobile deep links
+    cashapp_url = f"https://cash.app/${clean_tag}/{amount}?note={encoded_note}"
+
+    return JSONResponse({
+        "cashtag": f"${clean_tag}",
+        "amount": amount,
+        "plan": plan,
+        "code": user.payment_code,
+        "cashapp_url": cashapp_url,
+    })
+
+
+@app.post("/verify-cashapp")
+async def verify_cashapp(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_verified(user)
+    db.refresh(user)
+
+    if not user.payment_code:
+        return JSONResponse({"verified": False, "error": "No pending upgrade found. Select a plan first."}, status_code=400)
+
+    if not EMAIL_USER or not EMAIL_APP_PASSWORD:
+        return JSONResponse({"verified": False, "error": "Server email verification credentials not configured yet."}, status_code=500)
+
+    target_plan = user.pending_plan or "plus"
+
+    # Run IMAP inbox check in background thread so FastAPI never blocks
+    matched_plan = await asyncio.to_thread(
+        check_imap_for_cashapp_receipt,
+        user.payment_code,
+        target_plan,
     )
-    return JSONResponse({"url": session.url})
 
+    if matched_plan in ("plus", "premium"):
+        user.plan = matched_plan
+        # Clear payment_code so the same email receipt can never be reused
+        user.payment_code = None
+        user.pending_plan = None
+        db.commit()
+        return JSONResponse({
+            "verified": True,
+            "plan": user.plan,
+            "message": f"Payment verified! Your account has been upgraded to {user.plan.upper()}."
+        })
 
-@app.post("/stripe-webhook")
-async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    payload = await request.body()
-    sig = request.headers.get("stripe-signature", "")
-    if not STRIPE_WEBHOOK_SECRET:
-        return JSONResponse({"error": "Webhook not configured"}, status_code=500)
-    try:
-        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        meta = session.get("metadata") or {}
-        user_id = meta.get("user_id")
-        plan = meta.get("plan")
-        if user_id and plan in ("plus", "premium"):
-            user = db.query(User).filter(User.id == int(user_id)).first()
-            if user:
-                user.plan = plan
-                if session.get("customer"):
-                    user.stripe_customer_id = session["customer"]
-                db.commit()
-
-    elif event["type"] in ("customer.subscription.deleted", "customer.subscription.updated"):
-        sub = event["data"]["object"]
-        meta = sub.get("metadata") or {}
-        user_id = meta.get("user_id")
-        status = sub.get("status")
-        if user_id:
-            user = db.query(User).filter(User.id == int(user_id)).first()
-            if user:
-                if status in ("canceled", "unpaid", "incomplete_expired"):
-                    user.plan = "free"
-                elif status == "active":
-                    plan = meta.get("plan")
-                    if plan in ("plus", "premium"):
-                        user.plan = plan
-                db.commit()
-
-    return JSONResponse({"received": True})
+    return JSONResponse({
+        "verified": False,
+        "message": "Waiting for Cash App payment receipt... Make sure your code is in the 'For' note."
+    })
