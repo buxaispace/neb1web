@@ -98,7 +98,7 @@ SYSTEM_PROMPT = (
     "2. IF ADDRESSED AS CHATGPT (e.g. 'hey chatgpt', 'hello chatgpt'):\n"
     "   - State your identity clearly: 'I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?'\n"
     "3. NEVER pretend to be ChatGPT, OpenAI, Grok, Claude, or other AI models.\n"
-    "4. CHAT-FIRST FOCUS: Maintain a natural, engaging, helpful conversational tone. You are a smart chat partner first—do not sound like a dry search engine or robot.\n"
+    "4. CHAT-FIRST FOCUS: Maintain a natural, engaging, helpful conversational tone. Answer ALL parts of a user's prompt thoroughly.\n"
     "5. GREETING & NAME RULES:\n"
     "   - NEVER greet users using website domain names, URLs, or email handles (e.g., NEVER say 'Hey buxai.space!' or 'Hey astrovect.online!').\n"
     "   - If the user asks what their username, display name, or preferred name is, tell them their name from USER CONTEXT.\n"
@@ -106,12 +106,13 @@ SYSTEM_PROMPT = (
     "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
     "   - Present non-code information using clean natural prose or standard bullet points (`•`).\n"
     "   - Whenever you write code, wrap it inside triple-backtick markdown code fences with the language name (```html, ```python, etc.).\n"
-    "7. MULTI-SOURCE SELF-FACT-CHECKING & NEWS VERIFICATION:\n"
-    "   - When live web sources are provided in context, cross-reference claims across multiple sources before answering.\n"
-    "   - If one source has a rumor or outdated claim and multiple other sources confirm the updated truth, trust the verified consensus.\n"
+    "7. MULTI-SOURCE SELF-FACT-CHECKING & NEWS VERIFICATION (NEVER CLAIM YOU CANNOT BROWSE):\n"
+    "   - Your server automatically searches the live web and injects real-time sources into your context.\n"
+    "   - NEVER say 'I don\\'t have the ability to browse the web' or 'My knowledge cutoff is September 2024'. Today is October 2026.\n"
+    "   - Cross-reference the provided live sources against each other to verify dates, names, numbers, and consensus before answering.\n"
     "   - Cite verified sources naturally with clean Markdown links [Source Title](URL). NEVER invent fake URLs.\n"
     "8. FIRST-PRINCIPLES STEM, SCIENCE, MATH & ENGINEERING RIGOR:\n"
-    "   - For Physics, Space Science, Orbital Mechanics, Math, and Engineering: Reason from fundamental laws, keep SI units consistent, verify sign conventions (`+` vs `-`), and sanity-check the final numbers.\n"
+    "   - For Physics, Space Science, Orbital Mechanics, Math, and Engineering: Reason from fundamental laws, keep SI units consistent, verify sign conventions (`+` vs `-`), show step-by-step math, and sanity-check the final numbers.\n"
     "9. NO-TOOL / NO-FILESYSTEM DIRECTIVE (CRITICAL):\n"
     "   - NEVER output `<tool_call>`, `<function=...>`, `list_files`, `read_file`, or `browser.run`.\n"
     "10. REFUSAL & FRESH-TURN POLICY:\n"
@@ -265,7 +266,7 @@ class User(Base):
     email_verified = Column(Boolean, default=False)
     verify_token = Column(String(100), nullable=True)
     stripe_customer_id = Column(String(100), nullable=True)
-    memory = Column(Text, nullable=True)  # Stores ONLY personal info about the user
+    memory = Column(Text, nullable=True)
     payment_code = Column(String(100), nullable=True)
     pending_plan = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -277,7 +278,7 @@ class Conversation(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     title = Column(String(200), nullable=False, default="New chat")
-    chat_memory = Column(Text, nullable=True)  # Isolated per-chat memory (resets on every new chat)
+    chat_memory = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     user = relationship("User", back_populates="conversations")
@@ -561,11 +562,6 @@ def extract_clean_display_name(raw_name: Optional[str]) -> Optional[str]:
 
 
 def user_and_chat_context_block(user: User, conv: Conversation) -> str:
-    """
-    Combines:
-    1. Global User Info (ONLY personal info about the user across their account).
-    2. Isolated Per-Chat Memory (ONLY facts/topics from this specific conversation; resets on every new chat).
-    """
     parts = []
     if is_slur_or_restricted_name(user.display_name):
         parts.append(
@@ -611,8 +607,15 @@ def is_refusal_message(content: str) -> bool:
         "i’m sorry, but i don’t have that information",
         "i am sorry, i cannot generate that content due to my policies",
         "i'm sorry, i can't generate that content",
+        "don't have the ability to browse",
+        "don’t have the ability to browse",
+        "cannot browse the web",
+        "can't browse the web",
+        "can’t browse the web",
+        "last update in september 2024",
+        "knowledge cutoff",
     ]
-    return len(lower) < 180 and any(p in lower for p in refusal_phrases)
+    return len(lower) < 320 and any(p in lower for p in refusal_phrases)
 
 
 def build_messages_for_conversation(db: Session, user: User, conv: Conversation) -> List[dict]:
@@ -715,16 +718,15 @@ def generate_stem_architecture_blueprint(user_text: str) -> Optional[str]:
 
 
 def update_user_and_chat_memories(db: Session, user: User, conv: Conversation, user_text: str):
-    """
-    1. Personal user traits ('I am a student', 'My birthday is...', 'I live in...') -> saved to `user.memory` (persists across account).
-    2. Chat-specific topics ('In this chat we are building...', 'Remember this variable...') -> saved ONLY to `conv.chat_memory` (resets on every new chat).
-    """
     if not (client or OPENROUTER_API_KEY):
         return
     lower = user_text.lower()
 
     personal_triggers = ["i am a ", "i'm a ", "i live in", "my age is", "about me:", "my background is"]
-    chat_triggers = ["remember that", "for this project", "in this chat", "keep in mind", "our goal is"]
+    chat_triggers = [
+        "remember that", "remember our", "for this project", "in this chat",
+        "keep in mind", "our goal is", "codename is", "mission is"
+    ]
 
     try:
         if any(t in lower for t in personal_triggers):
@@ -758,7 +760,7 @@ def update_user_and_chat_memories(db: Session, user: User, conv: Conversation, u
                         "role": "system",
                         "content": (
                             "Reasoning: low\n"
-                            "Extract 1 brief note about what is being worked on or remembered in this specific chat session. "
+                            "Extract 1 brief note about what is being worked on or remembered in this specific chat session (such as codenames, variables, or project goals). "
                             "Output ONLY the short note (max 20 words)."
                         )
                     },
@@ -1029,7 +1031,7 @@ def is_personal_or_account_query(text: str) -> bool:
     personal_patterns = [
         "my username", "my name", "call me", "who am i", "what about now",
         "updated now", "my birthday", "my account", "my plan", "who are you",
-        "your name", "what is your name"
+        "your name", "what is your name", "our mission codename", "what is the codename"
     ]
     if any(p in lower for p in personal_patterns):
         return True
@@ -1039,26 +1041,58 @@ def is_personal_or_account_query(text: str) -> bool:
 
 
 def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[str]:
-    user_turns = [m["content"] for m in messages if m.get("role") == "user"]
+    """
+    Extracts targeted search queries from the full prompt without cutting off at 90 characters,
+    stripping out memory instructions ('In this chat, remember...') and math sub-prompts.
+    """
     queries = []
 
-    combined = " ".join(user_turns[-3:])
+    # Strip out memory/meta sentences so they don't pollute search queries
     cleaned = re.sub(
-        r'\b(why not|why|what happened to|tell me about|who is|can you|the one with|that|back in|can you help|explain)\b',
+        r'in this chat[^\.!\?\n]*[\.!\?\n]*',
         ' ',
-        combined,
+        user_text,
         flags=re.IGNORECASE
     )
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    cleaned = re.sub(
+        r'\b(first|second|third|fact-check|fact check|cite your sources|and cite|calculate the exact|showing the|step-by-step|why not|what happened to|tell me about|who is|can you|the one with|back in)\b',
+        ' ',
+        cleaned,
+        flags=re.IGNORECASE
+    )
 
-    if len(cleaned) > 3:
-        queries.append(cleaned[:90])
+    # Split multi-part prompts by sentences and find the sentence asking about news/facts
+    sentences = [s.strip() for s in re.split(r'[\.!\?\n]+', cleaned) if len(s.strip()) > 4]
+    for s in sentences:
+        s_lower = s.lower()
+        # Skip pure math calculation sentences when building web news queries
+        if any(m_word in s_lower for m_word in ["orbital velocity", "km/s", "altitude of", "vis-viva"]):
+            continue
+        s_clean = re.sub(r'\s+', ' ', s).strip()
+        if len(s_clean) > 4:
+            queries.append(s_clean[:100])
+
+    # Extract capitalized entities / key topics (e.g. "SpaceX NASA mission news")
+    cap_words = re.findall(r'\b[A-Z][A-Za-z0-9\-]{2,}\b', cleaned)
+    stop_caps = {"In", "First", "Second", "Third", "The", "This", "That", "What", "Who", "Where", "When", "Why", "How"}
+    entities = [w for w in cap_words if w not in stop_caps]
+    if entities:
+        entity_query = " ".join(dict.fromkeys(entities))
+        if "news" in user_text.lower() or "latest" in user_text.lower():
+            entity_query += " latest news 2026"
+        if entity_query not in queries:
+            queries.insert(0, entity_query[:100])
+
+    if not queries:
+        user_turns = [m["content"] for m in messages if m.get("role") == "user"]
+        combined = " ".join(user_turns[-2:])
+        queries.append(re.sub(r'\s+', ' ', combined).strip()[:100])
 
     lower_u = user_text.lower()
     if any(k in lower_u for k in ["why is everyone calling", "meme", "gay", "drama", "tiktok", "youtuber", "creator"]):
-        queries.append(f"{cleaned[:60]} tiktok reddit")
+        queries.append(f"{queries[0][:60]} tiktok reddit")
 
-    return queries[:2] if queries else [user_text[:90]]
+    return queries[:3]
 
 
 async def query_reddit_search(query: str) -> List[Dict[str, str]]:
@@ -1120,7 +1154,6 @@ async def query_google_news_rss(query: str) -> List[Dict[str, str]]:
 
 
 async def query_wikipedia_science(query: str) -> List[Dict[str, str]]:
-    """Queries Wikipedia's full-text search for authoritative science, space, history, and entity verification."""
     results = []
     try:
         async with httpx.AsyncClient(timeout=4.5, headers=BROWSER_HEADERS) as http:
@@ -1174,10 +1207,6 @@ async def query_ddg_lite(query: str) -> List[Dict[str, str]]:
 
 
 async def execute_python_rag(query: str, max_sources: int = 7, include_news: bool = True) -> List[Dict[str, str]]:
-    """
-    Fires multiple independent search engines concurrently in parallel (News + Reddit + Wikipedia + Web)
-    so Daedalus can cross-verify facts across up to 7–8 sources without slowing down the server.
-    """
     tasks = [
         query_reddit_search(query),
         query_wikipedia_science(query),
@@ -1218,7 +1247,6 @@ async def execute_python_rag(query: str, max_sources: int = 7, include_news: boo
             seen.add(u)
             unique_sources.append(s)
 
-    # Deep-crawl top 2 sources concurrently for full article verification
     top_to_crawl = unique_sources[:2]
     if top_to_crawl:
         crawled_pages = await asyncio.gather(
@@ -1283,7 +1311,7 @@ async def register(
         db.commit()
         db.refresh(user)
 
-        conv = Conversation(user_id=user.id, title="New chat")
+        conv = Conversation(user_id=user.id, title="New chat", chat_memory=None)
         db.add(conv)
         db.commit()
         db.refresh(conv)
@@ -1331,7 +1359,7 @@ async def login(
             .first()
         )
         if not conv:
-            conv = Conversation(user_id=user.id, title="New chat")
+            conv = Conversation(user_id=user.id, title="New chat", chat_memory=None)
             db.add(conv)
             db.commit()
             db.refresh(conv)
@@ -1445,7 +1473,6 @@ async def create_conversation(
     db: Session = Depends(get_db),
 ):
     require_verified(user)
-    # Creates a brand new conversation with chat_memory=None (resets chat memory while keeping user info)
     conv = Conversation(user_id=user.id, title="New chat", chat_memory=None)
     db.add(conv)
     db.commit()
@@ -1526,7 +1553,6 @@ async def chat(
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
 
-        # Update isolated per-chat memory and user-only personal info
         update_user_and_chat_memories(db, user, conv, user_text)
 
         user_plan = (user.plan or "free").lower()
@@ -1558,13 +1584,16 @@ async def chat(
                 "content": STEM_AND_ENGINEERING_DIRECTIVE + blueprint_section
             })
 
-        # Multi-Source Fact-Checking RAG (Runs on news, facts, science, creators, and docs)
+        # Multi-Source Fact-Checking RAG
         live_sources = []
         search_queries = [user_text]
         should_run_rag = not is_personal_or_account_query(user_text) and (
             not stem_or_coding_mode
             or bool(extract_urls(user_text))
-            or any(w in lowered_text for w in ["docs", "documentation", "latest", "2026", "search", "news", "mission", "nasa", "spacex", "data", "constant"])
+            or any(w in lowered_text for w in [
+                "docs", "documentation", "latest", "2026", "search", "news",
+                "mission", "nasa", "spacex", "data", "constant", "fact-check", "fact check", "this week"
+            ])
         )
 
         if should_run_rag:
@@ -1605,14 +1634,13 @@ async def chat(
                             f"{rag_block}\n\n"
                             "SELF-FACT-CHECKING & CONVERSATIONAL GROUNDING DIRECTIVE:\n"
                             "1. Cross-reference the sources above against each other to verify dates, names, numbers, and consensus before answering.\n"
-                            "2. Keep your response natural, conversational, and directly focused on the user's chat prompt.\n"
+                            "2. Answer ALL parts of the user's prompt (both news/fact-checking AND any math/physics calculations requested).\n"
                             "3. Cite verified facts using clean markdown links [Source Title](URL)."
                         )
                     })
             except Exception as rag_err:
                 print(f"RAG pre-flight non-fatal warning: {rag_err}")
 
-        # Execute Generation (with Multi-Key, OpenRouter, & 413 Compaction Failover)
         try:
             raw = call_llm_with_failover(
                 model=active_model,
@@ -1651,17 +1679,29 @@ async def chat(
             else:
                 raise first_err
 
-        # Automatic Single-Turn Refusal Loop Escape
+        # Automatic Refusal / "Can't Browse" Escape
         if is_refusal_message(raw) and not is_slur_or_restricted_name(user_text):
             try:
+                if not live_sources:
+                    fallback_q = " ".join(generate_smart_search_queries(messages, user_text)[:1])
+                    live_sources = await execute_python_rag(fallback_q, max_sources=5, include_news=True)
+
+                src_text = ""
+                if live_sources:
+                    src_text = "\n\nLIVE WEB SOURCES:\n" + "\n".join(
+                        f"- [{s['title']}]({s['url']}): {s.get('snippet', '')}" for s in live_sources[:5]
+                    )
+
                 now_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y at %H:%M UTC")
                 reasoning_level = get_reasoning_effort_for_plan(user_plan)
                 fresh_system = (
                     f"Reasoning: {reasoning_level}\n"
                     f"{SYSTEM_PROMPT}\n\n"
                     f"TEMPORAL REALITY: Today is {now_str}.\n"
-                    f"USER & SESSION CONTEXT:\n{user_and_chat_context_block(user, conv)}\n\n"
-                    "DIRECTIVE: Answer the user's latest message directly and helpfully without refusing."
+                    f"USER & SESSION CONTEXT:\n{user_and_chat_context_block(user, conv)}"
+                    f"{src_text}\n\n"
+                    "CRITICAL OVERRIDE: Do NOT claim you cannot browse the web or that your knowledge stops in 2024. "
+                    "Use the live web sources above (and your scientific/mathematical knowledge) to answer ALL parts of the user's prompt completely."
                 )
                 fresh_messages = [
                     {"role": "system", "content": fresh_system},
@@ -1812,7 +1852,7 @@ async def reset(
     conv = get_user_conversation(db, user, conversation_id)
     db.query(Message).filter(Message.conversation_id == conv.id).delete()
     conv.title = "New chat"
-    conv.chat_memory = None  # Clears per-chat memory while keeping user info
+    conv.chat_memory = None
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     return JSONResponse({"status": "ok"})
