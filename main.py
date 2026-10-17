@@ -2,7 +2,6 @@ import os
 import re
 import secrets
 import base64
-import hashlib
 import io
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -12,8 +11,8 @@ from typing import List, Optional, Dict, Any
 
 import httpx
 import stripe
-from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -54,10 +53,6 @@ FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
 # Neon URL fix: SQLAlchemy requires postgresql:// instead of postgres://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-# X (Twitter) OAuth 2.0 Credentials
-X_CLIENT_ID = os.getenv("X_CLIENT_ID", "")
-X_CLIENT_SECRET = os.getenv("X_CLIENT_SECRET", "")
 
 # Search Grounding API Keys (Optional)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -150,9 +145,6 @@ class User(Base):
     verify_token = Column(String(100), nullable=True)
     stripe_customer_id = Column(String(100), nullable=True)
     memory = Column(Text, nullable=True)
-    x_access_token = Column(String(500), nullable=True)
-    x_refresh_token = Column(String(500), nullable=True)
-    x_username = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
 
@@ -179,29 +171,17 @@ class Message(Base):
 
 
 def auto_migrate_db():
-    """Ensures existing tables in Neon have all newly added columns."""
+    """Ensures existing tables in Neon have all standard columns."""
     if not engine:
         return
     try:
         Base.metadata.create_all(bind=engine)
-        new_columns = [
-            ("x_access_token", "VARCHAR(500)"),
-            ("x_refresh_token", "VARCHAR(500)"),
-            ("x_username", "VARCHAR(100)"),
-            ("memory", "TEXT"),
-        ]
         with engine.connect() as conn:
-            for col_name, col_type in new_columns:
-                try:
-                    conn.execute(text(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
-                    conn.commit()
-                except Exception:
-                    try:
-                        conn.rollback()
-                        conn.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_type};"))
-                        conn.commit()
-                    except Exception:
-                        pass
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS memory TEXT;"))
+                conn.commit()
+            except Exception:
+                pass
     except Exception as e:
         print(f"Neon database migration notice: {e}")
 
@@ -381,9 +361,6 @@ def user_context_block(user: User) -> str:
             "but do not force their name into greetings or every response."
         )
 
-    if user.x_username:
-        parts.append(f"The user's connected X (Twitter) account is @{user.x_username}.")
-
     if user.birthday:
         parts.append(
             f"Their birthday is {user.birthday.isoformat()} "
@@ -472,88 +449,7 @@ def user_public(user: User) -> dict:
         "can_images": can_use_images(plan),
         "default_model": resolve_model_for_user(plan),
         "can_switch_models": plan in ("plus", "premium"),
-        "x_connected": bool(user.x_access_token),
-        "x_username": user.x_username,
     }
-
-
-# ---------------------------------------------------------------------------
-# X (TWITTER) POSTING ENGINE & INTELLIGENT DRAFTING
-# ---------------------------------------------------------------------------
-def is_x_post_request(text: str) -> bool:
-    lower = text.lower()
-    x_keywords = [
-        "on x", "to x", "on twitter", "to twitter", "my x account", "my twitter",
-        "connected x", "connected twitter", "tweet this", "post a tweet",
-        "make a post", "post this", "publish on x", "publish to x", "send a tweet"
-    ]
-    post_verbs = ["post", "tweet", "publish", "share", "send a tweet"]
-
-    has_x = any(k in lower for k in x_keywords)
-    has_verb = any(v in lower for v in post_verbs)
-    return (has_x and has_verb) or lower.startswith(("tweet:", "post:", "tweet ", "post to x"))
-
-
-def draft_tweet_with_llm(user_instruction: str) -> str:
-    """Uses LLM to draft a concise post fitting X's character constraints based on user guidance."""
-    if not client:
-        return user_instruction[:280]
-    try:
-        sys = (
-            "You are Daedalus, developed by AstroVectAI. "
-            "Write the exact tweet requested by the user following all instructions, name mentions, and signatures requested. "
-            "Rules:\n"
-            "1. Output ONLY the raw tweet text ready to be posted. Do not add quotes or surrounding commentary.\n"
-            "2. Keep it strictly under 270 characters so it fits on X.\n"
-            "3. Honor all signing requests (e.g. 'This was sent by Daedalus by its founder')."
-        )
-        resp = client.chat.completions.create(
-            model=MODEL_FREE,
-            messages=[
-                {"role": "system", "content": sys},
-                {"role": "user", "content": user_instruction}
-            ],
-            temperature=0.3,
-            max_tokens=80,
-        )
-        tweet = resp.choices[0].message.content.strip().strip('"').strip("'")
-        return tweet[:280]
-    except Exception as e:
-        print("Draft tweet error:", e)
-        return user_instruction[:280]
-
-
-async def execute_x_post(user: User, tweet_text: str) -> Dict[str, Any]:
-    if not user.x_access_token:
-        return {"error": "X account not linked. Please connect your X account first."}
-
-    clean_text = tweet_text.strip()[:280]
-    async with httpx.AsyncClient(timeout=10.0) as http:
-        try:
-            r = await http.post(
-                "https://api.twitter.com/2/tweets",
-                headers={
-                    "Authorization": f"Bearer {user.x_access_token}",
-                    "Content-Type": "application/json",
-                },
-                json={"text": clean_text},
-            )
-            if r.status_code in (200, 201):
-                data = r.json()
-                tweet_id = data.get("data", {}).get("id")
-                handle = user.x_username or "i"
-                return {
-                    "success": True,
-                    "id": tweet_id,
-                    "url": f"https://x.com/{handle}/status/{tweet_id}",
-                    "text": clean_text,
-                }
-            elif r.status_code == 401:
-                return {"error": "X access token expired. Please disconnect and reconnect your X account."}
-            else:
-                return {"error": f"X API error ({r.status_code}): {r.text}"}
-        except Exception as e:
-            return {"error": f"Failed to post to X: {str(e)}"}
 
 
 # ---------------------------------------------------------------------------
@@ -649,7 +545,7 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
 
     combined = " ".join(user_turns[-3:])
     cleaned = re.sub(
-        r'\b(why not|why|what happened to|tell me about|who is|can you|the one with|that|back in|can you help|explain|was it a|was it)\b',
+        r'\b(why not|why|what happened to|tell me about|who is|can you|the one with|that|back in|can you help|explain)\b',
         ' ',
         combined,
         flags=re.IGNORECASE
@@ -869,142 +765,6 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
             s["url"] = crawled["url"]
 
     return unique_sources[:4]
-
-
-# ---------------------------------------------------------------------------
-# Core Template & X OAuth Endpoints
-# ---------------------------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse(
-        "index.html", {"request": request, "model_name": MODEL_NAME}
-    )
-
-
-@app.get("/auth/x/login")
-async def x_login(
-    request: Request,
-    token: Optional[str] = Query(None),
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: Session = Depends(get_db)
-):
-    auth_token = token or (credentials.credentials if credentials else None)
-    if not auth_token:
-        raise HTTPException(status_code=401, detail="Authentication token required to link X account")
-
-    user_id = decode_user_id_from_token(auth_token)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid session token")
-
-    if not X_CLIENT_ID:
-        return HTMLResponse(
-            "<h2>X OAuth Not Configured</h2>"
-            "<p>Please set <code>X_CLIENT_ID</code> and <code>X_CLIENT_SECRET</code> in your environment variables.</p>"
-            "<p><a href='/'>Return to Daedalus</a></p>",
-            status_code=500
-        )
-
-    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.headers.get("host", ""))
-    base_url = APP_URL if APP_URL else f"{scheme}://{host}".rstrip("/")
-    redirect_uri = f"{base_url}/auth/x/callback"
-
-    code_verifier = secrets.token_urlsafe(32)
-    code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).decode().rstrip("=")
-
-    scope = "tweet.read tweet.write users.read offline.access"
-    state = f"{user_id}_{code_verifier}"
-
-    x_auth_url = (
-        f"https://twitter.com/i/oauth2/authorize?response_type=code"
-        f"&client_id={X_CLIENT_ID}"
-        f"&redirect_uri={urllib.parse.quote(redirect_uri)}"
-        f"&scope={urllib.parse.quote(scope)}"
-        f"&state={state}"
-        f"&code_challenge={code_challenge}"
-        f"&code_challenge_method=S256"
-    )
-    return RedirectResponse(url=x_auth_url)
-
-
-@app.get("/auth/x/callback")
-async def x_callback(
-    code: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),
-    error: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
-):
-    if error:
-        return HTMLResponse(f"<h2>X Authorization Error</h2><p>{error}</p><p><a href='/'>Return to Daedalus</a></p>", status_code=400)
-
-    if not code or not state:
-        return HTMLResponse("<h2>Invalid OAuth callback parameters</h2>", status_code=400)
-
-    try:
-        user_id_str, code_verifier = state.split("_", 1)
-        user = db.query(User).filter(User.id == int(user_id_str)).first()
-        if not user:
-            return HTMLResponse("<h2>User session not found</h2>", status_code=400)
-
-        redirect_uri = f"{APP_URL}/auth/x/callback"
-        auth_header = base64.b64encode(f"{X_CLIENT_ID}:{X_CLIENT_SECRET}".encode()).decode()
-
-        async with httpx.AsyncClient(timeout=10.0) as http:
-            token_res = await http.post(
-                "https://api.twitter.com/2/oauth2/token",
-                headers={
-                    "Authorization": f"Basic {auth_header}",
-                    "Content-Type": "application/x-www-form-urlencoded"
-                },
-                data={
-                    "code": code,
-                    "grant_type": "authorization_code",
-                    "client_id": X_CLIENT_ID,
-                    "redirect_uri": redirect_uri,
-                    "code_verifier": code_verifier,
-                }
-            )
-            token_data = token_res.json()
-
-            if "access_token" in token_data:
-                access_token = token_data["access_token"]
-                user.x_access_token = access_token
-                user.x_refresh_token = token_data.get("refresh_token")
-
-                user_res = await http.get(
-                    "https://api.twitter.com/2/users/me",
-                    headers={"Authorization": f"Bearer {access_token}"}
-                )
-                if user_res.status_code == 200:
-                    profile_data = user_res.json()
-                    user.x_username = profile_data.get("data", {}).get("username")
-
-                db.commit()
-                return RedirectResponse(url="/?x_connected=true")
-            else:
-                return HTMLResponse(f"<h2>Failed to retrieve X token</h2><pre>{token_data}</pre>", status_code=400)
-    except Exception as e:
-        return HTMLResponse(f"<h2>OAuth Callback Error</h2><p>{e}</p>", status_code=500)
-
-
-@app.post("/auth/x/disconnect")
-async def x_disconnect(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    user.x_access_token = None
-    user.x_refresh_token = None
-    user.x_username = None
-    db.commit()
-    return JSONResponse({"status": "disconnected"})
-
-
-@app.post("/post-to-x")
-async def post_to_x_endpoint(
-    tweet_text: str = Form(...),
-    user: User = Depends(get_current_user)
-):
-    res = await execute_x_post(user, tweet_text)
-    if res.get("error"):
-        return JSONResponse({"error": res["error"]}, status_code=400)
-    return JSONResponse(res)
 
 
 # ---------------------------------------------------------------------------
@@ -1262,7 +1022,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT (WITH AUTO-DRAFTING & X POSTING)
+# CHAT ENDPOINT
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -1300,52 +1060,6 @@ async def chat(
         # Identity check
         if lowered_text in ["hey chatgpt", "hello chatgpt", "hi chatgpt", "chatgpt"]:
             final = "I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?"
-            db.add(Message(conversation_id=conv.id, role="assistant", content=final))
-            conv.updated_at = datetime.now(timezone.utc)
-            db.commit()
-            return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
-
-        # -------------------------------------------------------------------
-        # Natural Language X (Twitter) Post Detection
-        # -------------------------------------------------------------------
-        if is_x_post_request(user_text):
-            # Check if direct text was provided after a colon
-            direct_match = re.search(r'^(?:post|tweet|publish)\s+(?:this\s+)?(?:on|to)\s+(?:x|twitter)\s*[:\-]\s*(.*)$', user_text, flags=re.IGNORECASE)
-            if direct_match and direct_match.group(1).strip():
-                draft_text = direct_match.group(1).strip().strip('"').strip("'")
-            else:
-                # Ask LLM to draft the exact tweet following user's instructions
-                draft_text = draft_tweet_with_llm(user_text)
-
-            # If user has X connected, execute the post
-            if user.x_access_token:
-                x_res = await execute_x_post(user, draft_text)
-                if x_res.get("success"):
-                    final = (
-                        f"Successfully posted to your X account!\n\n"
-                        f"• **Tweet:** \"{draft_text}\"\n"
-                        f"• **Link:** [View on X ↗]({x_res['url']})"
-                    )
-                else:
-                    user_token = create_access_token(user.id)
-                    intent_url = f"https://x.com/intent/tweet?text={urllib.parse.quote(draft_text)}"
-                    final = (
-                        f"Drafted post:\n\"{draft_text}\"\n\n"
-                        f"Direct publishing returned: {x_res.get('error')}\n"
-                        f"• You can post it with one click: [Post to X ↗]({intent_url})"
-                    )
-            else:
-                user_token = create_access_token(user.id)
-                connect_url = f"/auth/x/login?token={user_token}"
-                intent_url = f"https://x.com/intent/tweet?text={urllib.parse.quote(draft_text)}"
-                final = (
-                    f"Here is the post I drafted for you:\n\n"
-                    f"\"{draft_text}\"\n\n"
-                    f"Your X account isn't connected yet.\n"
-                    f"• [Connect your X Account ↗]({connect_url}) to enable direct one-step posting.\n"
-                    f"• Or publish this post right now with one click: [Post to X ↗]({intent_url})"
-                )
-
             db.add(Message(conversation_id=conv.id, role="assistant", content=final))
             conv.updated_at = datetime.now(timezone.utc)
             db.commit()
