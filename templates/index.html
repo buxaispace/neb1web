@@ -501,6 +501,7 @@
       background: #0d0d11;
       border: 1px solid var(--border-strong);
       font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+      white-space: normal;
     }
     .code-block-header {
       display: flex;
@@ -1059,14 +1060,53 @@
       } catch (e) {}
     };
 
+    function normalizeCodeFencesInBrowser(rawText) {
+      if (!rawText) return "";
+      let t = rawText.trim();
+
+      // 1. If there is an odd number of ``` fences (unclosed code block), close it
+      const fenceMatches = t.match(/```/g);
+      const fenceCount = fenceMatches ? fenceMatches.length : 0;
+      if (fenceCount % 2 === 1) {
+        return t + "\n```";
+      }
+
+      // 2. If it already has ``` fences, return as-is
+      if (fenceCount >= 2) {
+        return rawText;
+      }
+
+      // 3. Auto-detect raw unwrapped HTML documents (e.g. starting with <!DOCTYPE html> or <html>)
+      if (/^(?:<!DOCTYPE\s+html|<html\b|<head\b|<body\b|<style\b)/i.test(t)) {
+        return "```html\n" + t + "\n```";
+      }
+
+      // 4. Auto-detect raw unwrapped Python / JS code blocks
+      const lines = t.split("\n");
+      if (lines.length >= 4) {
+        const firstLine = lines[0].trim();
+        if (/^(?:import\s+\w+|from\s+[\w\.]+\s+import\s+|def\s+\w+\s*\(|async\s+def\s+\w+\s*\(|class\s+\w+)/.test(firstLine)) {
+          return "```python\n" + t + "\n```";
+        }
+        if (/^(?:const\s+\w+|let\s+\w+|function\s+\w+|export\s+default)/.test(firstLine)) {
+          return "```javascript\n" + t + "\n```";
+        }
+      }
+
+      return rawText;
+    }
+
     function formatLinksAndMarkdown(text) {
       if (!text) return "";
 
-      // 1. Extract fenced ```code``` blocks first so URLs/markdown inside code are never altered
+      // Normalize any raw unwrapped code or unclosed ``` fences first
+      let normalized = normalizeCodeFencesInBrowser(text);
+
+      // 1. Extract fenced ```code``` blocks so URLs/markdown inside code are never altered
       const codeBlocks = [];
-      let processed = text.replace(/```([a-zA-Z0-9_\-\+#]*)\n?([\s\S]*?)```/g, function(match, lang, codeContent) {
+      let processed = normalized.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, function(match, lang, codeContent) {
         const idx = codeBlocks.length;
-        const cleanLang = (lang || "code").trim();
+        const cleanLang = (lang || "code").trim() || "code";
         const escapedCode = escapeHtml(codeContent.replace(/\n$/, ""));
         codeBlocks.push(
           '<div class="code-block-wrap">' +
@@ -1209,7 +1249,6 @@
 
     function applyPlanUI() {
       planBadge.textContent = userPlan || "free";
-      // Both Plus and Premium users get Vision-to-Code & Screenshot Bug Fixer
       canImages = userPlan === "plus" || userPlan === "premium";
       camBtn.disabled = !canImages;
       camBtn.title = canImages ? "Attach image or code screenshot" : "Image & screenshot uploads require Plus or Premium";
