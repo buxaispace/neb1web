@@ -203,12 +203,11 @@ def auto_migrate_db():
                     except Exception:
                         pass
     except Exception as e:
-        print(f"Neon database migration warning: {e}")
+        print(f"Neon database migration notice: {e}")
 
 
 @app.on_event("startup")
 def on_startup():
-    """Runs database initialization safely inside FastAPI startup event."""
     if engine:
         auto_migrate_db()
 
@@ -247,7 +246,7 @@ def decode_user_id_from_token(token_str: str) -> Optional[int]:
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db),
-) -> User:
+):
     if not credentials:
         raise HTTPException(status_code=401, detail="Not logged in")
     user_id = decode_user_id_from_token(credentials.credentials)
@@ -479,8 +478,51 @@ def user_public(user: User) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# X (TWITTER) OAUTH 2.0 & POSTING ENGINE
+# X (TWITTER) POSTING ENGINE & INTELLIGENT DRAFTING
 # ---------------------------------------------------------------------------
+def is_x_post_request(text: str) -> bool:
+    lower = text.lower()
+    x_keywords = [
+        "on x", "to x", "on twitter", "to twitter", "my x account", "my twitter",
+        "connected x", "connected twitter", "tweet this", "post a tweet",
+        "make a post", "post this", "publish on x", "publish to x", "send a tweet"
+    ]
+    post_verbs = ["post", "tweet", "publish", "share", "send a tweet"]
+
+    has_x = any(k in lower for k in x_keywords)
+    has_verb = any(v in lower for v in post_verbs)
+    return (has_x and has_verb) or lower.startswith(("tweet:", "post:", "tweet ", "post to x"))
+
+
+def draft_tweet_with_llm(user_instruction: str) -> str:
+    """Uses LLM to draft a concise post fitting X's character constraints based on user guidance."""
+    if not client:
+        return user_instruction[:280]
+    try:
+        sys = (
+            "You are Daedalus, developed by AstroVectAI. "
+            "Write the exact tweet requested by the user following all instructions, name mentions, and signatures requested. "
+            "Rules:\n"
+            "1. Output ONLY the raw tweet text ready to be posted. Do not add quotes or surrounding commentary.\n"
+            "2. Keep it strictly under 270 characters so it fits on X.\n"
+            "3. Honor all signing requests (e.g. 'This was sent by Daedalus by its founder')."
+        )
+        resp = client.chat.completions.create(
+            model=MODEL_FREE,
+            messages=[
+                {"role": "system", "content": sys},
+                {"role": "user", "content": user_instruction}
+            ],
+            temperature=0.3,
+            max_tokens=80,
+        )
+        tweet = resp.choices[0].message.content.strip().strip('"').strip("'")
+        return tweet[:280]
+    except Exception as e:
+        print("Draft tweet error:", e)
+        return user_instruction[:280]
+
+
 async def execute_x_post(user: User, tweet_text: str) -> Dict[str, Any]:
     if not user.x_access_token:
         return {"error": "X account not linked. Please connect your X account first."}
@@ -841,6 +883,7 @@ async def home(request: Request):
 
 @app.get("/auth/x/login")
 async def x_login(
+    request: Request,
     token: Optional[str] = Query(None),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db)
@@ -861,10 +904,14 @@ async def x_login(
             status_code=500
         )
 
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", ""))
+    base_url = APP_URL if APP_URL else f"{scheme}://{host}".rstrip("/")
+    redirect_uri = f"{base_url}/auth/x/callback"
+
     code_verifier = secrets.token_urlsafe(32)
     code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).decode().rstrip("=")
 
-    redirect_uri = f"{APP_URL}/auth/x/callback"
     scope = "tweet.read tweet.write users.read offline.access"
     state = f"{user_id}_{code_verifier}"
 
@@ -1215,7 +1262,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT
+# CHAT ENDPOINT (WITH AUTO-DRAFTING & X POSTING)
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -1250,7 +1297,7 @@ async def chat(
 
         lowered_text = user_text.lower().strip()
 
-        # Identity test check
+        # Identity check
         if lowered_text in ["hey chatgpt", "hello chatgpt", "hi chatgpt", "chatgpt"]:
             final = "I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?"
             db.add(Message(conversation_id=conv.id, role="assistant", content=final))
@@ -1258,24 +1305,45 @@ async def chat(
             db.commit()
             return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
 
-        # Post to X intent check
-        post_match = re.search(r'^(?:post|tweet|publish)\s+(?:this\s+)?(?:on|to)\s+(?:x|twitter)\s*[:\-]\s*(.*)$', user_text, flags=re.IGNORECASE)
-        if post_match:
-            draft_text = post_match.group(1).strip().strip('"').strip("'")
+        # -------------------------------------------------------------------
+        # Natural Language X (Twitter) Post Detection
+        # -------------------------------------------------------------------
+        if is_x_post_request(user_text):
+            # Check if direct text was provided after a colon
+            direct_match = re.search(r'^(?:post|tweet|publish)\s+(?:this\s+)?(?:on|to)\s+(?:x|twitter)\s*[:\-]\s*(.*)$', user_text, flags=re.IGNORECASE)
+            if direct_match and direct_match.group(1).strip():
+                draft_text = direct_match.group(1).strip().strip('"').strip("'")
+            else:
+                # Ask LLM to draft the exact tweet following user's instructions
+                draft_text = draft_tweet_with_llm(user_text)
+
+            # If user has X connected, execute the post
             if user.x_access_token:
                 x_res = await execute_x_post(user, draft_text)
                 if x_res.get("success"):
-                    final = f"Successfully posted to X!\n\n• **Post:** {draft_text}\n• **Link:** [View on X ↗]({x_res['url']})"
+                    final = (
+                        f"Successfully posted to your X account!\n\n"
+                        f"• **Tweet:** \"{draft_text}\"\n"
+                        f"• **Link:** [View on X ↗]({x_res['url']})"
+                    )
                 else:
-                    final = f"Failed to post to X: {x_res.get('error')}"
+                    user_token = create_access_token(user.id)
+                    intent_url = f"https://x.com/intent/tweet?text={urllib.parse.quote(draft_text)}"
+                    final = (
+                        f"Drafted post:\n\"{draft_text}\"\n\n"
+                        f"Direct publishing returned: {x_res.get('error')}\n"
+                        f"• You can post it with one click: [Post to X ↗]({intent_url})"
+                    )
             else:
                 user_token = create_access_token(user.id)
                 connect_url = f"/auth/x/login?token={user_token}"
                 intent_url = f"https://x.com/intent/tweet?text={urllib.parse.quote(draft_text)}"
                 final = (
-                    "Your X account isn't connected yet.\n\n"
-                    f"• [Connect your X Account ↗]({connect_url}) to enable direct posting.\n"
-                    f"• Or publish this post manually right now: [Draft on X ↗]({intent_url})"
+                    f"Here is the post I drafted for you:\n\n"
+                    f"\"{draft_text}\"\n\n"
+                    f"Your X account isn't connected yet.\n"
+                    f"• [Connect your X Account ↗]({connect_url}) to enable direct one-step posting.\n"
+                    f"• Or publish this post right now with one click: [Post to X ↗]({intent_url})"
                 )
 
             db.add(Message(conversation_id=conv.id, role="assistant", content=final))
