@@ -17,7 +17,31 @@
       font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 15px; -webkit-text-size-adjust: 100%;
     }
-    body { display: flex; flex-direction: column; max-width: 960px; margin: 0 auto; }
+    body { 
+      display: flex; 
+      flex-direction: column; 
+      max-width: 960px; 
+      margin: 0 auto; 
+      transition: max-width 0.15s ease, padding 0.15s ease;
+    }
+
+    /* Device screen sizing: stretched vs compact */
+    body.layout-stretched {
+      max-width: 100% !important;
+      width: 100%;
+      margin: 0 !important;
+    }
+    body.layout-compact {
+      max-width: 100% !important;
+      width: 100%;
+      margin: 0 auto !important;
+    }
+    body.layout-compact .msg {
+      margin-bottom: 14px;
+    }
+    body.layout-compact #chat {
+      padding: 14px 12px;
+    }
 
     #auth-screen {
       flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px;
@@ -334,6 +358,30 @@
   </div>
 
   <script>
+    // -------------------------------------------------------------
+    // Device & Screen Detection (Stretched vs Compact Layout)
+    // -------------------------------------------------------------
+    function searchDeviceAndAdaptLayout() {
+      const width = window.innerWidth || document.documentElement.clientWidth || screen.width;
+      const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      
+      // If wide desktop monitor (>= 1024px) and not mobile, use stretched mode; otherwise use compact mode
+      if (width >= 1024 && !isMobileDevice) {
+        document.body.classList.add("layout-stretched");
+        document.body.classList.remove("layout-compact");
+      } else {
+        document.body.classList.add("layout-compact");
+        document.body.classList.remove("layout-stretched");
+      }
+    }
+
+    window.addEventListener("resize", searchDeviceAndAdaptLayout);
+    window.addEventListener("DOMContentLoaded", searchDeviceAndAdaptLayout);
+    searchDeviceAndAdaptLayout();
+
+    // -------------------------------------------------------------
+    // Original UI Elements & State
+    // -------------------------------------------------------------
     const authScreen = document.getElementById("auth-screen");
     const chatScreen = document.getElementById("chat-screen");
     const authForm = document.getElementById("auth-form");
