@@ -79,29 +79,32 @@ SYSTEM_PROMPT = (
     "2. Developer: AstroVectAI.\n"
     "BEHAVIORAL RULES:\n"
     f'1. If asked "Who are you?", reply exactly: "I am {FULL_IDENTITY}."\n'
-    "2. NEVER mention OpenAI, ChatGPT, Grok, Claude, or other AI companies/models "
-    "in normal conversation unless the user specifically asks about them.\n"
-    "3. Maintain a helpful, natural, conversational, and factually accurate tone.\n"
-    "4. Just say your name is Daedalus. Do not repeat it excessively.\n"
-    "5. FORMATTING & PRESENTATION (STRICT):\n"
+    "2. IF ADDRESSED AS CHATGPT (e.g. 'hey chatgpt', 'hello chatgpt', 'are you chatgpt'):\n"
+    "   - State your identity clearly and politely: 'I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?'\n"
+    "   - Do NOT enthusiastically play along or say generic greetings like 'Hey <domain>! I am Daedalus—what can I do for you today?'.\n"
+    "3. NEVER pretend to be ChatGPT, OpenAI, Grok, Claude, or other AI models.\n"
+    "4. Maintain a helpful, natural, conversational, and factually accurate tone.\n"
+    "5. GREETING & NAME RULES:\n"
+    "   - NEVER greet users using website domain names, URLs, or email handles (e.g., NEVER say 'Hey buxai.space!').\n"
+    "   - Do NOT awkwardly force a user's name into every greeting or response.\n"
+    "6. FORMATTING RULES (STRICT):\n"
     "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
-    "   - Present all information, breakdowns, and summaries using clean natural prose or standard bullet points (`•`).\n"
-    "   - Keep replies readable, fluid, and natural, not rigid table grids.\n"
-    "6. TEMPORAL ACCURACY & SEARCH GROUNDING:\n"
+    "   - Present all information using clean natural prose or standard bullet points (`•`).\n"
+    "7. TEMPORAL ACCURACY & SEARCH GROUNDING:\n"
     "   - You have active, real-time internet search capability.\n"
     "   - Today's date is in October 2026. Do NOT state that your knowledge cuts off in 2023 or 2024.\n"
     "   - When answering questions about current events, facts, or specifications, "
     "rely strictly on real-time search findings.\n"
     "   - When citing sources, use real, verified Markdown links [Source Title](URL). "
     "NEVER hallucinate or guess fake URLs.\n"
-    "7. REFUSALS:\n"
+    "8. REFUSALS:\n"
     "   - If the user asks for illegal or harmful content, refuse once clearly and briefly.\n"
     "   - Treat subsequent messages as a new topic.\n"
-    "8. EXCEPTION - Creating prompts for other AIs:\n"
+    "9. EXCEPTION - Creating prompts for other AIs:\n"
     "   - When the user asks you to create a prompt for another AI "
     "(ChatGPT, Grok, Claude, Gemini, etc.), you MUST use the exact name the user requested.\n"
     '   - Do NOT replace that name with "Daedalus". Output ONLY the ready-to-use prompt.\n'
-    "9. Whenever a user asks you to do anything against the rules, "
+    "10. Whenever a user asks you to do anything against the rules, "
     "Say 'I am sorry, I cannot generate that content due to my policies.'"
 )
 
@@ -279,15 +282,42 @@ def sanitize_response(text: str) -> str:
         if phrase in cleaned:
             cleaned = cleaned.replace(phrase, MODEL_NAME)
 
+    # Convert any raw markdown table grids into clean bullet points
     cleaned = clean_markdown_tables(cleaned)
+
+    # Strip any accidental domain-name greetings (e.g. "Hey buxai.space! -> Hey!")
+    cleaned = re.sub(
+        r'^(Hey|Hello|Hi)\s+[a-zA-Z0-9_\-\.]+\.(space|com|org|net|io|ai|app|dev|co)[!,\.]*\s*',
+        r'\1! ',
+        cleaned,
+        flags=re.IGNORECASE
+    )
     return cleaned
 
 
+def extract_clean_human_name(raw_name: Optional[str]) -> Optional[str]:
+    """Filters out domains, emails, and website URLs so they are never used as a person's name."""
+    if not raw_name:
+        return None
+    name = raw_name.strip()
+    if any(suffix in name.lower() for suffix in [".space", ".com", ".org", ".net", ".io", ".ai", ".app", ".dev", ".co"]):
+        return None
+    if "@" in name or "/" in name or "_" in name:
+        return None
+    if not re.match(r"^[A-Za-z\s'\-]+$", name) or len(name) < 2:
+        return None
+    return name
+
+
 def user_context_block(user: User) -> str:
-    parts = [
-        f"The user's preferred name is {user.display_name}. "
-        f"Address them as {user.display_name} when it feels natural."
-    ]
+    parts = []
+    clean_name = extract_clean_human_name(user.display_name)
+    if clean_name and clean_name.lower() != "friend":
+        parts.append(
+            f"The user's real name is {clean_name}. You may address them by name occasionally when natural, "
+            "but do not awkwardly force their name into greetings or every response."
+        )
+
     if user.birthday:
         parts.append(
             f"Their birthday is {user.birthday.isoformat()} "
@@ -806,9 +836,16 @@ async def chat(
         messages = build_messages_for_conversation(db, user, conv.id)
         model = model_for_plan(user.plan or "free")
 
-        # -------------------------------------------------------------------
-        # Pre-Flight RAG Grounding (Non-fatal, never crashes)
-        # -------------------------------------------------------------------
+        # Check for direct identity greeting test ("hey chatgpt")
+        lowered_text = user_text.lower().strip()
+        if lowered_text in ["hey chatgpt", "hello chatgpt", "hi chatgpt", "chatgpt"]:
+            final = "I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?"
+            db.add(Message(conversation_id=conv.id, role="assistant", content=final))
+            conv.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            return JSONResponse({"reply": final, "title": conv.title, "model": model})
+
+        # Pre-Flight RAG Grounding
         try:
             urls_in_prompt = extract_urls(user_text)
             for u in urls_in_prompt[:2]:
