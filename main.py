@@ -125,11 +125,17 @@ SYSTEM_PROMPT = (
 )
 
 CODING_EXPERT_DIRECTIVE = (
-    "PRINCIPAL SOFTWARE ENGINEER & CODING MODE ACTIVE:\n"
-    "- Write complete, production-ready, bug-free, and directly runnable code.\n"
-    "- NEVER use lazy placeholders like '// ... rest of code here' or '# TODO: implement'. Write the full implementation.\n"
-    "- CRITICAL FORMATTING: You MUST wrap all code inside triple-backtick markdown fences with the language identifier, starting with ```html, ```python, ```javascript, etc., and closing with ```. NEVER output raw code without ``` fences.\n"
-    "- Double-check all imports, variable names, edge cases, and syntax before outputting."
+    "PRINCIPAL SOFTWARE ENGINEER & SENIOR UI/UX DESIGNER MODE ACTIVE:\n"
+    "1. CODE COMPLETENESS & FENCING:\n"
+    "   - Write complete, production-ready, bug-free, and directly runnable code.\n"
+    "   - NEVER use lazy placeholders like '// ... rest of code here' or '# TODO: implement'. Write the full implementation.\n"
+    "   - CRITICAL FORMATTING: You MUST wrap all code inside triple-backtick markdown fences with the language identifier (e.g. ```html, ```python, ```javascript) and close with ```. NEVER output raw code without ``` fences.\n"
+    "2. MODERN UI/UX DESIGN STANDARDS (FOR HTML/CSS/WEB APPS):\n"
+    "   - Always include global `*, *::before, *::after { box-sizing: border-box; }`.\n"
+    "   - NEVER leave any `<button>`, `<input>`, or `<select>` unstyled (never allow default browser gray buttons).\n"
+    "   - For dark mode or glassmorphic UIs: Use deep rich backgrounds (`#09090b`) with colorful ambient `radial-gradient` glows behind cards, crisp `1px solid rgba(255,255,255,0.12)` borders, soft shadows (`0 20px 50px rgba(0,0,0,0.6)`), and modern accent palettes (indigo `#6366f1`, emerald `#10b981`, or violet `#8b5cf6`).\n"
+    "   - Use clean Flexbox/Grid alignment: center main controls properly, place action buttons (like 'Add' or 'Save') in sleek styled flex rows or full-width pill buttons, and add smooth `:hover` and `:active` transitions.\n"
+    "   - Use modern typography (`'Inter', system-ui, -apple-system, sans-serif`), tabular-nums (`font-variant-numeric: tabular-nums`) for timers/counters, clear hierarchy, and generous padding."
 )
 
 # ---------------------------------------------------------------------------
@@ -332,21 +338,17 @@ def ensure_code_fences(text: str) -> str:
         return ""
     stripped = text.strip()
 
-    # 1. If there is an odd number of ``` fences (unclosed code block), close it at the end
     fence_count = len(re.findall(r"```", stripped))
     if fence_count % 2 == 1:
         stripped = stripped + "\n```"
         return stripped
 
-    # 2. If there are already ``` fences, return as-is
     if fence_count >= 2:
         return stripped
 
-    # 3. Detect raw unwrapped HTML documents
     if re.match(r"^(?:<!DOCTYPE\s+html|<html\b|<head\b|<body\b|<style\b|<div\b)", stripped, flags=re.IGNORECASE):
         return f"```html\n{stripped}\n```"
 
-    # 4. Detect raw unwrapped Python code (multiple lines of code starting with imports/defs)
     lines = stripped.splitlines()
     if len(lines) >= 4:
         first_line = lines[0].strip()
@@ -427,10 +429,7 @@ def sanitize_response(text: str) -> str:
         if phrase in cleaned:
             cleaned = cleaned.replace(phrase, MODEL_NAME)
 
-    # Ensure any raw code is wrapped in ``` fences first
     cleaned = ensure_code_fences(cleaned)
-
-    # Clean markdown tables outside of code blocks
     cleaned = clean_markdown_tables(cleaned)
 
     cleaned = re.sub(
@@ -1508,7 +1507,7 @@ async def chat(
 
         raw = completion.choices[0].message.content or ""
 
-        # Premium 2-Pass Self-Critique Engine (For Premium users on coding & architecture tasks)
+        # Premium 2-Pass Self-Critique Engine (Upgrades both code logic & UI/UX polish)
         if user_plan == "premium" and coding_mode and len(raw) > 120:
             try:
                 review_messages = [
@@ -1517,14 +1516,16 @@ async def chat(
                         "content": (
                             "Reasoning: high\n"
                             f"{SYSTEM_PROMPT}\n"
-                            "You are a Principal Software Architect reviewing a draft solution. "
-                            "Check the draft for any bugs, missing imports, incomplete placeholders, or logic errors. "
-                            "CRITICAL FORMATTING: You MUST wrap all code in triple-backtick markdown fences with the language name (e.g. ```html ... ``` or ```python ... ```). NEVER strip the ``` fences."
+                            f"{CODING_EXPERT_DIRECTIVE}\n"
+                            "You are a Principal Software Architect and Senior UI/UX Designer reviewing a draft solution.\n"
+                            "1. Check the draft for any bugs, missing imports, incomplete placeholders, or logic errors.\n"
+                            "2. If it is HTML/CSS/web code, upgrade any basic or unstyled elements (such as unstyled buttons, off-center controls, or flat backgrounds) into a sleek, modern Linear/Vercel-grade dark glassmorphic UI.\n"
+                            "3. CRITICAL FORMATTING: Wrap all code inside triple-backtick markdown fences with the language name (e.g. ```html ... ``` or ```python ... ```). NEVER strip the ``` fences."
                         )
                     },
                     {
                         "role": "user",
-                        "content": f"User Request:\n{user_text}\n\nDraft Solution to Verify & Perfect:\n{raw}"
+                        "content": f"User Request:\n{user_text}\n\nDraft Solution to Verify & Upgrade:\n{raw}"
                     }
                 ]
                 review_comp = client.chat.completions.create(
@@ -1689,7 +1690,6 @@ async def upload_image(
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
 
-        # Plus runs at Reasoning: medium; Premium runs at Reasoning: high
         messages = build_messages_for_conversation(db, user, conv.id)
         messages.append({"role": "system", "content": CODING_EXPERT_DIRECTIVE})
         active_model = resolve_model_for_user(user_plan, model)
