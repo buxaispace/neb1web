@@ -103,7 +103,7 @@ SYSTEM_PROMPT = (
     "6. FORMATTING RULES (STRICT):\n"
     "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
     "   - Present non-code information using clean natural prose or standard bullet points (`•`).\n"
-    "   - For code, ALWAYS use properly fenced markdown code blocks (e.g. ```python, ```html, ```javascript) with complete, runnable code.\n"
+    "   - Whenever you write code, you MUST wrap it inside triple-backtick markdown code fences with the language name (for example: ```html ... ``` or ```python ... ```). NEVER output raw unwrapped code.\n"
     "7. CREATOR, MEME & INTERNET CULTURE RULES:\n"
     "   - When asked about internet creators, YouTubers, TikTokers, streamers, or viral memes:\n"
     "     1. Explain the actual online context: viral comment section trolling, running jokes, wiki vandalism, or creator response videos.\n"
@@ -128,7 +128,7 @@ CODING_EXPERT_DIRECTIVE = (
     "PRINCIPAL SOFTWARE ENGINEER & CODING MODE ACTIVE:\n"
     "- Write complete, production-ready, bug-free, and directly runnable code.\n"
     "- NEVER use lazy placeholders like '// ... rest of code here' or '# TODO: implement'. Write the full implementation.\n"
-    "- Wrap all code in fenced markdown blocks with the language tag (e.g. ```python, ```javascript, ```html, ```lua).\n"
+    "- CRITICAL FORMATTING: You MUST wrap all code inside triple-backtick markdown fences with the language identifier, starting with ```html, ```python, ```javascript, etc., and closing with ```. NEVER output raw code without ``` fences.\n"
     "- Double-check all imports, variable names, edge cases, and syntax before outputting."
 )
 
@@ -249,7 +249,7 @@ def decode_user_id_from_token(token_str: str) -> Optional[int]:
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db),
-) -> User:
+):
     if not credentials:
         raise HTTPException(status_code=401, detail="Not logged in")
     user_id = decode_user_id_from_token(credentials.credentials)
@@ -323,6 +323,41 @@ def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conv
     return conv
 
 
+def ensure_code_fences(text: str) -> str:
+    """
+    Guarantees that if the LLM outputs raw unwrapped code (e.g. starting with <!DOCTYPE html>,
+    <html>, import, def, etc.) or leaves a ``` fence unclosed, it is properly wrapped in ``` fences.
+    """
+    if not text:
+        return ""
+    stripped = text.strip()
+
+    # 1. If there is an odd number of ``` fences (unclosed code block), close it at the end
+    fence_count = len(re.findall(r"```", stripped))
+    if fence_count % 2 == 1:
+        stripped = stripped + "\n```"
+        return stripped
+
+    # 2. If there are already ``` fences, return as-is
+    if fence_count >= 2:
+        return stripped
+
+    # 3. Detect raw unwrapped HTML documents
+    if re.match(r"^(?:<!DOCTYPE\s+html|<html\b|<head\b|<body\b|<style\b|<div\b)", stripped, flags=re.IGNORECASE):
+        return f"```html\n{stripped}\n```"
+
+    # 4. Detect raw unwrapped Python code (multiple lines of code starting with imports/defs)
+    lines = stripped.splitlines()
+    if len(lines) >= 4:
+        first_line = lines[0].strip()
+        if re.match(r"^(?:import\s+\w+|from\s+[\w\.]+\s+import\s+|def\s+\w+\s*\(|async\s+def\s+\w+\s*\(|class\s+\w+)", first_line):
+            return f"```python\n{stripped}\n```"
+        if re.match(r"^(?:const\s+\w+|let\s+\w+|function\s+\w+|export\s+default|import\s+.*from\s+['\"])", first_line):
+            return f"```javascript\n{stripped}\n```"
+
+    return stripped
+
+
 def clean_markdown_tables_outside_code(text_segment: str) -> str:
     if not text_segment or "|" not in text_segment:
         return text_segment or ""
@@ -392,6 +427,10 @@ def sanitize_response(text: str) -> str:
         if phrase in cleaned:
             cleaned = cleaned.replace(phrase, MODEL_NAME)
 
+    # Ensure any raw code is wrapped in ``` fences first
+    cleaned = ensure_code_fences(cleaned)
+
+    # Clean markdown tables outside of code blocks
     cleaned = clean_markdown_tables(cleaned)
 
     cleaned = re.sub(
@@ -525,7 +564,8 @@ def is_coding_or_logic_query(text: str) -> bool:
         "luau", "roblox", "unity", "c#", "c++", "java", "rust", "golang",
         "function", "variable", "bug", "error", "traceback", "exception",
         "syntax", "compile", "algorithm", "regex", "json", "api endpoint",
-        "write a program", "make a website", "build a game", "debug", "fix this"
+        "write a program", "make a website", "build a game", "debug", "fix this",
+        "single-file", "app with"
     ]
     return any(k in lower for k in coding_keywords)
 
@@ -948,18 +988,15 @@ async def query_google_news_rss(query: str) -> List[Dict[str, str]]:
 async def execute_python_rag(query: str, max_sources: int = 4, include_news: bool = True) -> List[Dict[str, str]]:
     sources: List[Dict[str, str]] = []
 
-    # 1. Reddit Social / Technical / Creator Search
     reddit_res = await query_reddit_search(query)
     if reddit_res:
         sources.extend(reddit_res)
 
-    # 2. Google News RSS (Skipped on pure coding queries so news doesn't pollute code)
     if include_news:
         news_res = await query_google_news_rss(query)
         if news_res:
             sources.extend(news_res)
 
-    # 3. Tavily API
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -978,7 +1015,6 @@ async def execute_python_rag(query: str, max_sources: int = 4, include_news: boo
         except Exception as e:
             print("Tavily warning:", e)
 
-    # 4. Serper API
     if SERPER_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -998,7 +1034,6 @@ async def execute_python_rag(query: str, max_sources: int = 4, include_news: boo
         except Exception as e:
             print("Serper warning:", e)
 
-    # 5. Native DDGS
     if HAS_DDGS:
         try:
             with DDGS() as ddgs:
@@ -1014,7 +1049,6 @@ async def execute_python_rag(query: str, max_sources: int = 4, include_news: boo
         except Exception as e:
             print("DDGS warning:", e)
 
-    # 6. Standalone DuckDuckGo Lite HTTP Search
     try:
         async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
             res = await http.post("https://lite.duckduckgo.com/lite/", data={"q": query})
@@ -1374,9 +1408,6 @@ async def chat(
         if coding_mode:
             messages.append({"role": "system", "content": CODING_EXPERT_DIRECTIVE})
 
-        # Pre-Flight RAG Grounding:
-        # - Skip on personal profile queries
-        # - On coding queries, only search if URLs are provided or user explicitly asks for docs/latest
         live_sources = []
         search_queries = [user_text]
         should_run_rag = not is_personal_or_account_query(user_text) and (
@@ -1488,7 +1519,7 @@ async def chat(
                             f"{SYSTEM_PROMPT}\n"
                             "You are a Principal Software Architect reviewing a draft solution. "
                             "Check the draft for any bugs, missing imports, incomplete placeholders, or logic errors. "
-                            "Output ONLY the final, perfected response and complete runnable code directly to the user."
+                            "CRITICAL FORMATTING: You MUST wrap all code in triple-backtick markdown fences with the language name (e.g. ```html ... ``` or ```python ... ```). NEVER strip the ``` fences."
                         )
                     },
                     {
