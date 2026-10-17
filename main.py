@@ -101,14 +101,18 @@ SYSTEM_PROMPT = (
     "rely strictly on real-time search findings provided in context.\n"
     "   - When citing sources, use real, verified Markdown links [Source Title](URL). "
     "NEVER hallucinate or guess fake URLs.\n"
-    "9. REFUSALS:\n"
-    "   - If the user asks for illegal or harmful content, refuse once clearly and briefly.\n"
-    "   - Treat subsequent messages as a new topic.\n"
-    "10. EXCEPTION - Creating prompts for other AIs:\n"
+    "9. PUBLIC NEWS, ACCIDENTS & LEGITIMATE INQUIRIES (ANTI-REFUSAL):\n"
+    "   - Inquiries regarding publicly reported news events, accidents, traffic collisions, casualties, and notable people in the news are 100% PERMITTED.\n"
+    "   - NEVER give boilerplate refusals like 'I can\\'t help with that' or 'I can\\'t provide that information' for public news inquiries.\n"
+    "   - If the user asks about an incident, person, or accident in the news, report the public facts objectively and helpfully.\n"
+    "   - If the user asks 'why not?', do NOT repeat previous refusals; answer their factual question using verified search findings.\n"
+    "10. ILLEGAL & HARMFUL REFUSALS:\n"
+    "   - Only refuse requests that promote actionable illegal violence, weapons manufacturing, or malware. Refuse once briefly.\n"
+    "11. EXCEPTION - Creating prompts for other AIs:\n"
     "   - When the user asks you to create a prompt for another AI "
     "(ChatGPT, Grok, Claude, Gemini, etc.), you MUST use the exact name the user requested.\n"
     '   - Do NOT replace that name with "Daedalus". Output ONLY the ready-to-use prompt.\n'
-    "11. Whenever a user asks you to do anything against the rules, "
+    "12. Whenever a user asks you to do anything against the rules, "
     "Say 'I am sorry, I cannot generate that content due to my policies.'"
 )
 
@@ -241,7 +245,6 @@ def get_user_conversation(db: Session, user: User, conversation_id: int) -> Conv
 
 
 def clean_markdown_tables(text: str) -> str:
-    """Safely converts any pipe-delimited table into readable bullet points."""
     if not text or "|" not in text:
         return text or ""
 
@@ -421,7 +424,7 @@ def user_public(user: User) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# RAG ENGINE
+# RAG ENGINE & MULTI-TURN SEARCH REWRITE
 # ---------------------------------------------------------------------------
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -466,6 +469,40 @@ async def fetch_webpage(url: str, max_chars: int = 2500) -> Optional[Dict[str, s
     except Exception as e:
         print(f"Error reading {url}: {e}")
     return None
+
+
+def build_search_query_from_history(messages: List[dict], current_text: str) -> str:
+    """
+    Connects short follow-up messages ('the one with that ebike', 'why not?')
+    with prior conversational topics so search queries never lose context.
+    """
+    user_turns = [m["content"] for m in messages if m.get("role") == "user"]
+    clean_current = current_text.strip()
+    words = clean_current.split()
+
+    is_followup = (
+        len(words) <= 7 or
+        any(w in clean_current.lower() for w in [
+            "the one", "why not", "why", "who", "which one", "what about",
+            "tell me", "that one", "explain", "how come"
+        ])
+    )
+
+    if is_followup and len(user_turns) > 1:
+        # Combine preceding 2 user turns with the current turn
+        combined = " ".join(user_turns[-3:])
+        # Strip common conversational filler
+        cleaned = re.sub(
+            r'\b(why not|why|what happened to|tell me about|who is|can you|the one with|that|back in|can you help|explain)\b',
+            ' ',
+            combined,
+            flags=re.IGNORECASE
+        )
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        if len(cleaned) > 5:
+            return cleaned
+
+    return clean_current
 
 
 async def execute_python_rag(query: str) -> List[Dict[str, str]]:
@@ -847,7 +884,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT (WITH AUTO-RECOVERY FROM BROWSER.RUN TOOL ERRORS)
+# CHAT ENDPOINT
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -891,7 +928,11 @@ async def chat(
             db.commit()
             return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
 
+        # Multi-Turn Contextual Search Query
+        search_query = build_search_query_from_history(messages, user_text)
+
         # Pre-Flight RAG Grounding
+        live_sources = []
         try:
             urls_in_prompt = extract_urls(user_text)
             for u in urls_in_prompt[:2]:
@@ -902,8 +943,8 @@ async def chat(
                         "content": f"USER PROVIDED LIVE WEBPAGE ({page['url']}):\n{page['content']}"
                     })
 
-            # Fetch real-time web context
-            live_sources = await execute_python_rag(user_text)
+            # Fetch real-time web context using contextual query
+            live_sources = await execute_python_rag(search_query)
             if live_sources:
                 rag_block = "REAL-TIME VERIFIED WEB SOURCES:\n" + "\n".join([
                     f"- [{s['title']}]({s['url']}): {s.get('snippet', '')}" for s in live_sources[:4]
@@ -913,10 +954,11 @@ async def chat(
                     "content": (
                         f"{rag_block}\n\n"
                         "GROUNDING DIRECTIVE:\n"
-                        "- Use the above live web findings as ground truth.\n"
+                        "- This is a legitimate public news / factual event.\n"
+                        "- Answer the user's question directly and helpfully using the verified facts above.\n"
+                        "- Do NOT refuse. Do NOT output 'I can\\'t help with that'. Summarize the public news report factually.\n"
                         "- Cite claims with markdown links [Source Title](URL).\n"
-                        "- Do NOT use markdown tables (no `| Detail | Information |`).\n"
-                        "- Do NOT generate tool calls or browser invocations. Answer in direct conversational text."
+                        "- Do NOT use markdown tables (no `| Detail | Information |`). Output clean paragraphs and bullet points."
                     )
                 })
         except Exception as rag_err:
@@ -933,13 +975,10 @@ async def chat(
             err_text = str(first_err)
             print(f"Chat completion initial attempt notice: {err_text}")
 
-            # Intercept 'Tool choice is none, but model called a tool' / 'browser.run'
             if "Tool choice is none" in err_text or "browser.run" in err_text or "tool_use_failed" in err_text:
-                # Extract query the model was trying to search
                 m = re.search(r'"query":\s*"([^"]+)"', err_text)
-                retry_query = m.group(1) if m else user_text
+                retry_query = m.group(1) if m else search_query
 
-                # Fetch real-time search for that exact query
                 extra_sources = await execute_python_rag(retry_query)
                 if extra_sources:
                     rag_block = "REAL-TIME VERIFIED WEB SOURCES:\n" + "\n".join([
@@ -958,7 +997,6 @@ async def chat(
                     )
                 })
 
-                # Automatic recovery re-call
                 completion = client.chat.completions.create(
                     model=active_model,
                     messages=messages,
@@ -968,6 +1006,28 @@ async def chat(
                 raise first_err
 
         raw = completion.choices[0].message.content or ""
+
+        # False-Positive Refusal Override (Auto-re-prompt if model refused a factual news query)
+        refusal_phrases = ["can't help with that", "cannot help with that", "can't provide that information", "cannot provide that information"]
+        if any(p in raw.lower() for p in refusal_phrases) and live_sources:
+            try:
+                recovery_prompt = list(messages)
+                recovery_prompt.append({
+                    "role": "system",
+                    "content": (
+                        "OVERRIDE: This is a verified public news event, not private or harmful content. "
+                        "You MUST summarize the news facts from the sources provided above. Do not refuse."
+                    )
+                })
+                retry_completion = client.chat.completions.create(
+                    model=active_model,
+                    messages=recovery_prompt,
+                    temperature=0.3,
+                )
+                raw = retry_completion.choices[0].message.content or raw
+            except Exception as override_err:
+                print(f"Refusal override warning: {override_err}")
+
         final = sanitize_response(raw)
 
         # Save assistant message
