@@ -73,7 +73,7 @@
     }
 
     /* -----------------------------------------------------------
-       AUTH SCREEN (Grok + ChatGPT Minimalist Style)
+       AUTH SCREEN
     ----------------------------------------------------------- */
     #auth-screen {
       flex: 1;
@@ -189,7 +189,7 @@
     .reg-only { display: none; }
 
     /* -----------------------------------------------------------
-       CHAT WORKSPACE (ChatGPT Sidebar + Grok Main View)
+       CHAT WORKSPACE
     ----------------------------------------------------------- */
     #chat-screen { display: none; flex-direction: column; height: 100%; position: relative; }
     .chat-body { display: flex; flex: 1; min-height: 0; }
@@ -323,7 +323,7 @@
       cursor: pointer;
     }
 
-    /* Grok-Style Model Switcher Segmented Pill */
+    /* Model Switcher Segmented Pill */
     #model-tabs-wrap {
       display: inline-flex;
       background: var(--surface);
@@ -413,7 +413,7 @@
     }
 
     /* -----------------------------------------------------------
-       CHAT MESSAGES & CODE BLOCKS (ChatGPT & Grok Hybrid)
+       CHAT MESSAGES, HEADINGS, MATH & CODE BLOCKS
     ----------------------------------------------------------- */
     #chat {
       flex: 1;
@@ -493,6 +493,24 @@
     }
     .msg .sep { display: none; }
 
+    /* Styled Markdown Headings & Section Dividers inside AI responses */
+    .md-h1, .md-h2, .md-h3 {
+      color: #ffffff;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      margin: 14px 0 6px;
+      line-height: 1.35;
+      display: block;
+    }
+    .md-h1 { font-size: 1.15rem; }
+    .md-h2 { font-size: 1.05rem; }
+    .md-h3 { font-size: 0.96rem; color: #d4d4d8; }
+    .md-hr {
+      border: none;
+      border-top: 1px solid var(--border-strong);
+      margin: 14px 0;
+    }
+
     /* Code Block Terminal Box + Copy Button */
     .code-block-wrap {
       margin: 12px 0;
@@ -564,7 +582,7 @@
     .msg strong { color: #ffffff; font-weight: 600; }
 
     /* -----------------------------------------------------------
-       FLOATING COMPOSER INPUT BAR (Grok / ChatGPT Style)
+       FLOATING COMPOSER INPUT BAR
     ----------------------------------------------------------- */
     #input-bar {
       background: linear-gradient(to top, var(--bg) 70%, transparent);
@@ -1036,7 +1054,7 @@
     searchDeviceAndAdaptLayout();
 
     // -------------------------------------------------------------
-    // Code Block Copy Handler & Markdown Formatter
+    // Code Block Copy Handler, Math Sanitizer & Markdown Formatter
     // -------------------------------------------------------------
     function escapeHtml(str) {
       return (str || "")
@@ -1060,28 +1078,51 @@
       } catch (e) {}
     };
 
+    function cleanLatexAndArtifacts(str) {
+      if (!str) return "";
+      let s = str;
+      // Strip any accidental unprompted "not ChatGPT" opener from older saved messages
+      s = s.replace(
+        /^\s*(?:(?:Hello|Hi|Hey|Greetings)[!,\.]?\s*)?(?:I am|I'm|I’m)\s+Daedalus,\s*developed by AstroVectAI,\s*not ChatGPT[\.\!]?\s*(?:How can I help you[^\n\?\!]*[\?\!]?\s*)?(?:---\s*)?/i,
+        ""
+      );
+      // Strip leftover table-header bullets from older history
+      s = s.replace(/^[•\-\*]\s*Agency\s*—\s*Event\s*—\s*Date\s*—\s*Source\s*$/gim, "");
+      // Convert raw LaTeX delimiters \( ... \) and \[ ... \] into clean text
+      s = s.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, "$1");
+      s = s.replace(/\\\(\s*(.*?)\s*\\\)/g, "$1");
+      s = s.replace(/\\(?:text|mathrm|mathbf)\{([^}]*)\}/g, "$1");
+      s = s.replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, "($1 / $2)");
+      s = s.replace(/\\sqrt\{([^}]*)\}/g, "√($1)");
+      s = s.replace(/\\,/g, "")
+           .replace(/\\;/g, " ")
+           .replace(/\\times/g, "×")
+           .replace(/\\cdot/g, "·")
+           .replace(/\\approx/g, "≈")
+           .replace(/\\pi/g, "π")
+           .replace(/\\mu/g, "μ")
+           .replace(/\\Delta/g, "Δ");
+      return s.trim();
+    }
+
     function normalizeCodeFencesInBrowser(rawText) {
       if (!rawText) return "";
       let t = rawText.trim();
 
-      // 1. If there is an odd number of ``` fences (unclosed code block), close it
       const fenceMatches = t.match(/```/g);
       const fenceCount = fenceMatches ? fenceMatches.length : 0;
       if (fenceCount % 2 === 1) {
         return t + "\n```";
       }
 
-      // 2. If it already has ``` fences, return as-is
       if (fenceCount >= 2) {
         return rawText;
       }
 
-      // 3. Auto-detect raw unwrapped HTML documents (e.g. starting with <!DOCTYPE html> or <html>)
       if (/^(?:<!DOCTYPE\s+html|<html\b|<head\b|<body\b|<style\b)/i.test(t)) {
         return "```html\n" + t + "\n```";
       }
 
-      // 4. Auto-detect raw unwrapped Python / JS code blocks
       const lines = t.split("\n");
       if (lines.length >= 4) {
         const firstLine = lines[0].trim();
@@ -1099,7 +1140,6 @@
     function formatLinksAndMarkdown(text) {
       if (!text) return "";
 
-      // Normalize any raw unwrapped code or unclosed ``` fences first
       let normalized = normalizeCodeFencesInBrowser(text);
 
       // 1. Extract fenced ```code``` blocks so URLs/markdown inside code are never altered
@@ -1120,26 +1160,40 @@
         return "@@CODEBLOCK_" + idx + "@@";
       });
 
-      // 2. Escape HTML on the remaining text
+      // 2. Clean LaTeX & legacy artifacts on non-code text
+      processed = cleanLatexAndArtifacts(processed);
+
+      // 3. Escape HTML on the remaining text
       let escaped = escapeHtml(processed);
 
-      // 3. Inline `code`
+      // 4. Horizontal dividers (---)
+      escaped = escaped.replace(/^\s*---\s*$/gm, '<hr class="md-hr" />');
+
+      // 5. Markdown Headings (###, ##, #)
+      escaped = escaped.replace(/^###\s+(.+)$/gm, '<span class="md-h3">$1</span>');
+      escaped = escaped.replace(/^##\s+(.+)$/gm, '<span class="md-h2">$1</span>');
+      escaped = escaped.replace(/^#\s+(.+)$/gm, '<span class="md-h1">$1</span>');
+
+      // 6. Inline `code`
       escaped = escaped.replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
 
-      // 4. Convert Markdown Links: [Title](URL) -> Clickable <a> tag
+      // 7. Convert Markdown Links: [Title](URL) -> Clickable <a> tag
       escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+|\/[^\s\)]+)\)/g, function(match, title, url) {
         return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + title + ' ↗</a>';
       });
 
-      // 5. Convert remaining bare URLs
+      // 8. Convert remaining bare URLs
       escaped = escaped.replace(/(^|[\s\n(])(https?:\/\/[^\s<)]+)/g, function(match, prefix, url) {
         return prefix + '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + url + ' ↗</a>';
       });
 
-      // 6. Convert **bold** to <strong>
+      // 9. Convert **bold** to <strong>
       escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
-      // 7. Restore fenced code blocks
+      // 10. Collapse excessive blank lines
+      escaped = escaped.replace(/\n{3,}/g, "\n\n");
+
+      // 11. Restore fenced code blocks
       escaped = escaped.replace(/@@CODEBLOCK_(\d+)@@/g, function(match, idx) {
         return codeBlocks[parseInt(idx, 10)] || "";
       });
