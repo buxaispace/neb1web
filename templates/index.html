@@ -413,7 +413,7 @@
     }
 
     /* -----------------------------------------------------------
-       CHAT MESSAGES (ChatGPT & Grok Hybrid Layout)
+       CHAT MESSAGES & CODE BLOCKS (ChatGPT & Grok Hybrid)
     ----------------------------------------------------------- */
     #chat {
       flex: 1;
@@ -492,6 +492,63 @@
       border-radius: 999px;
     }
     .msg .sep { display: none; }
+
+    /* Code Block Terminal Box + Copy Button */
+    .code-block-wrap {
+      margin: 12px 0;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #0d0d11;
+      border: 1px solid var(--border-strong);
+      font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    }
+    .code-block-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 14px;
+      background: #16161d;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.74rem;
+      color: var(--muted);
+      font-family: "Inter", sans-serif;
+    }
+    .code-lang-label {
+      text-transform: lowercase;
+      font-weight: 600;
+      color: #a1a1aa;
+    }
+    .copy-code-btn {
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      color: var(--text);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .copy-code-btn:hover {
+      background: var(--elevated-hover);
+    }
+    .code-block-pre {
+      margin: 0;
+      padding: 14px;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.55;
+      color: #e4e4e7;
+      white-space: pre;
+    }
+    .inline-code {
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 0.86em;
+      background: rgba(255, 255, 255, 0.09);
+      padding: 2px 6px;
+      border-radius: 5px;
+      color: #f4f4f6;
+    }
 
     .chat-link {
       color: var(--indigo);
@@ -644,7 +701,7 @@
       border: 1px solid var(--border-strong);
       border-radius: 24px;
       padding: 28px;
-      max-width: 720px;
+      max-width: 740px;
       width: 100%;
       max-height: 90vh;
       overflow-y: auto;
@@ -652,7 +709,7 @@
     }
     .plans-card h2 { margin-bottom: 6px; font-size: 1.35rem; }
     .plans-card .sub { color: var(--muted); margin-bottom: 22px; font-size: 0.9rem; }
-    .plans-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+    .plans-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
     .plan-box {
       border: 1px solid var(--border);
       border-radius: 18px;
@@ -664,7 +721,7 @@
     }
     .plan-box h3 { font-size: 1.05rem; margin-bottom: 4px; }
     .plan-box .price { font-size: 1.5rem; font-weight: 700; margin: 10px 0; }
-    .plan-box ul { list-style: none; font-size: 0.83rem; color: var(--muted); line-height: 1.7; margin-bottom: 18px; }
+    .plan-box ul { list-style: none; font-size: 0.82rem; color: var(--muted); line-height: 1.7; margin-bottom: 18px; }
     .plan-box button {
       width: 100%;
       padding: 11px;
@@ -875,7 +932,7 @@
             <button type="button" class="remove" id="remove-preview">×</button>
           </div>
           <div class="input-row">
-            <button type="button" class="icon-btn" id="cam-btn" title="Attach (Premium)">+</button>
+            <button type="button" class="icon-btn" id="cam-btn" title="Attach image/screenshot (Plus & Premium)">+</button>
             <input type="file" id="file-input" accept="image/*" capture="environment" />
             <textarea id="message" rows="1" placeholder="Ask Daedalus anything…"></textarea>
             <button type="button" class="btn" id="reset-btn">Reset</button>
@@ -897,9 +954,10 @@
             <h3>Free</h3>
             <div class="price">$0</div>
             <ul>
-              <li>• gpt-oss-20b</li>
+              <li>• gpt-oss-20b (Low reasoning)</li>
               <li>• Real-time web search</li>
-              <li>• Multi-chat memory</li>
+              <li>• Multi-chat history</li>
+              <li>• No image/screenshot uploads</li>
             </ul>
           </div>
           <button type="button" disabled id="btn-free">Current plan</button>
@@ -909,9 +967,10 @@
             <h3>Plus</h3>
             <div class="price">$4/mo</div>
             <ul>
-              <li>• gpt-oss-120b & 20b switcher</li>
-              <li>• Real-time web search</li>
-              <li>• Multi-chat memory</li>
+              <li>• gpt-oss-120b & 20b (Medium reasoning)</li>
+              <li>• Vision-to-Code & Bug Fixer (Qwen 3.8)</li>
+              <li>• Pro Coding Mode & Docs RAG</li>
+              <li>• Auto cross-chat memory</li>
             </ul>
           </div>
           <button type="button" id="btn-plus">Upgrade to Plus</button>
@@ -921,9 +980,10 @@
             <h3>Premium</h3>
             <div class="price">$8/mo</div>
             <ul>
-              <li>• gpt-oss-120b & 20b switcher</li>
-              <li>• Image uploads (Qwen 3.8)</li>
-              <li>• Multi-chat memory</li>
+              <li>• gpt-oss-120b & 20b (High reasoning)</li>
+              <li>• 2-Pass Self-Critique Coding Engine</li>
+              <li>• Vision-to-Code (High reasoning)</li>
+              <li>• Deep Research (6+ sources) & Auto-Memory</li>
             </ul>
           </div>
           <button type="button" id="btn-premium">Upgrade to Premium</button>
@@ -975,7 +1035,7 @@
     searchDeviceAndAdaptLayout();
 
     // -------------------------------------------------------------
-    // Clickable Link & Markdown Formatter
+    // Code Block Copy Handler & Markdown Formatter
     // -------------------------------------------------------------
     function escapeHtml(str) {
       return (str || "")
@@ -986,18 +1046,63 @@
         .replace(/'/g, "&#039;");
     }
 
-    function formatLinksAndMarkdown(text) {
-      let escaped = escapeHtml(text);
+    window.copyCodeBlock = async function(btn) {
+      const wrap = btn.closest(".code-block-wrap");
+      if (!wrap) return;
+      const codeEl = wrap.querySelector("code");
+      if (!codeEl) return;
+      try {
+        await navigator.clipboard.writeText(codeEl.textContent);
+        const orig = btn.textContent;
+        btn.textContent = "Copied ✓";
+        setTimeout(() => { btn.textContent = orig; }, 1800);
+      } catch (e) {}
+    };
 
+    function formatLinksAndMarkdown(text) {
+      if (!text) return "";
+
+      // 1. Extract fenced ```code``` blocks first so URLs/markdown inside code are never altered
+      const codeBlocks = [];
+      let processed = text.replace(/```([a-zA-Z0-9_\-\+#]*)\n?([\s\S]*?)```/g, function(match, lang, codeContent) {
+        const idx = codeBlocks.length;
+        const cleanLang = (lang || "code").trim();
+        const escapedCode = escapeHtml(codeContent.replace(/\n$/, ""));
+        codeBlocks.push(
+          '<div class="code-block-wrap">' +
+            '<div class="code-block-header">' +
+              '<span class="code-lang-label">' + escapeHtml(cleanLang) + '</span>' +
+              '<button type="button" class="copy-code-btn" onclick="copyCodeBlock(this)">Copy code</button>' +
+            '</div>' +
+            '<pre class="code-block-pre"><code>' + escapedCode + '</code></pre>' +
+          '</div>'
+        );
+        return "@@CODEBLOCK_" + idx + "@@";
+      });
+
+      // 2. Escape HTML on the remaining text
+      let escaped = escapeHtml(processed);
+
+      // 3. Inline `code`
+      escaped = escaped.replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
+
+      // 4. Convert Markdown Links: [Title](URL) -> Clickable <a> tag
       escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+|\/[^\s\)]+)\)/g, function(match, title, url) {
         return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + title + ' ↗</a>';
       });
 
+      // 5. Convert remaining bare URLs
       escaped = escaped.replace(/(^|[\s\n(])(https?:\/\/[^\s<)]+)/g, function(match, prefix, url) {
         return prefix + '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="chat-link">' + url + ' ↗</a>';
       });
 
+      // 6. Convert **bold** to <strong>
       escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+      // 7. Restore fenced code blocks
+      escaped = escaped.replace(/@@CODEBLOCK_(\d+)@@/g, function(match, idx) {
+        return codeBlocks[parseInt(idx, 10)] || "";
+      });
 
       return escaped;
     }
@@ -1104,9 +1209,10 @@
 
     function applyPlanUI() {
       planBadge.textContent = userPlan || "free";
-      canImages = userPlan === "premium";
+      // Both Plus and Premium users get Vision-to-Code & Screenshot Bug Fixer
+      canImages = userPlan === "plus" || userPlan === "premium";
       camBtn.disabled = !canImages;
-      camBtn.title = canImages ? "Attach image" : "Images require Premium";
+      camBtn.title = canImages ? "Attach image or code screenshot" : "Image & screenshot uploads require Plus or Premium";
       verifyBanner.style.display = emailVerified ? "none" : "flex";
 
       const canSwitchModels = userPlan === "plus" || userPlan === "premium";
@@ -1520,7 +1626,7 @@
 
     async function sendImage(caption) {
       if (!canImages) {
-        alert("Image upload requires Premium ($8/mo). Open Plans to upgrade.");
+        alert("Image & screenshot uploads require Plus ($4/mo) or Premium ($8/mo). Open Plans to upgrade.");
         clearPreview(); return;
       }
       if (!currentConvId) await createConversation();
@@ -1529,6 +1635,7 @@
       const form = new FormData();
       form.append("file", selectedFile);
       form.append("conversation_id", currentConvId);
+      form.append("model", selectedModel);
       if (caption) form.append("caption", caption);
       clearPreview(); msgInput.value = ""; autoResize();
       setStatus("Uploading…", "var(--amber)"); showTyping(); sendBtn.disabled = true;
@@ -1574,7 +1681,7 @@
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendText(); }
     });
     camBtn.addEventListener("click", function () {
-      if (!canImages) { alert("Images require Premium. Open Plans."); return; }
+      if (!canImages) { alert("Image & screenshot uploads require Plus or Premium. Open Plans."); return; }
       fileInput.click();
     });
     fileInput.addEventListener("change", function () {
