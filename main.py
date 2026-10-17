@@ -6,6 +6,7 @@ import io
 import imaplib
 import email
 from email.header import decode_header
+from email.utils import parsedate_to_datetime
 import asyncio
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -108,9 +109,10 @@ SYSTEM_PROMPT = (
     "   - NEVER use raw LaTeX delimiters like `\\( ... \\)`, `\\[ ... \\]`, or `\\text{...}`. Write equations using clean Unicode math symbols (e.g., `R_E = 6,378.137 km`, `v = √(μ / r)`, `Δv`, `×`, `≈`, `²`, `³`) so they read cleanly on screen.\n"
     "   - Whenever you write code, wrap it inside triple-backtick markdown code fences with the language name (```html, ```python, etc.).\n"
     "5. LIVE WEB & NEWS VERIFICATION (NEVER CLAIM YOU CANNOT BROWSE):\n"
-    "   - Your server automatically searches the live web and injects real-time sources into your context.\n"
-    "   - NEVER say 'I don\\'t have the ability to browse the web' or 'My knowledge cutoff is September 2024'. Today is October 2026.\n"
-    "   - ONLY cite exact URLs provided in the `MULTI-SOURCE LIVE WEB & NEWS FACT-CHECK INDEX`. NEVER invent fake URLs or generic homepage links like `[SpaceX Official Website](https://www.spacex.com)`. If a specific detail isn't in the live sources, state what the provided sources actually report.\n"
+    "   - Your server automatically searches the live web and injects real-time sources sorted newest-first into your context.\n"
+    "   - NEVER say 'I don\\'t have the ability to browse the web' or 'My knowledge cutoff is September 2024'.\n"
+    "   - ALWAYS prioritize the most recent dates and flight numbers (e.g., higher flight numbers and newest dates in the index supersede older flights).\n"
+    "   - ONLY cite exact URLs provided in the `MULTI-SOURCE LIVE WEB & NEWS FACT-CHECK INDEX`. NEVER invent fake URLs or generic homepage links like `[SpaceX Official Website](https://www.spacex.com)`.\n"
     "6. FIRST-PRINCIPLES STEM, SCIENCE, MATH & ENGINEERING RIGOR:\n"
     "   - For Physics, Space Science, Orbital Mechanics, Math, and Engineering: State the governing equations, keep SI units consistent, verify sign conventions (`+` vs `-`), show step-by-step substitutions, and sanity-check the final numbers.\n"
     "7. NO-TOOL / NO-FILESYSTEM DIRECTIVE (CRITICAL):\n"
@@ -478,7 +480,6 @@ def clean_markdown_tables_outside_code(text_segment: str) -> str:
         }
         for line in lines:
             stripped = line.strip()
-            # Also strip pre-converted "• Agency — Event — Date — Source" header lines
             if re.match(r"^[•\-\*]\s*(?:Agency\s*—\s*Event|Parameter\s*—\s*Value|Detail\s*—\s*Information|Property\s*—\s*Value)", stripped, flags=re.IGNORECASE):
                 continue
 
@@ -487,10 +488,8 @@ def clean_markdown_tables_outside_code(text_segment: str) -> str:
                 parts = [p.strip() for p in raw_parts]
                 if not parts or not any(parts):
                     continue
-                # Skip markdown separator rows like |---|---|
                 if all(re.match(r"^:?-+:?$", p) for p in parts if p):
                     continue
-                # Skip table header rows where columns are generic labels
                 cleaned_cols = [re.sub(r"\*+", "", p).strip().lower() for p in parts if p]
                 if cleaned_cols and sum(1 for c in cleaned_cols if c in table_header_words) >= max(1, len(cleaned_cols) // 2):
                     continue
@@ -518,16 +517,11 @@ def clean_latex_outside_code(text_segment: str) -> str:
     if not text_segment:
         return ""
     s = text_segment
-    # Strip display and inline math delimiters \( ... \) and \[ ... \]
     s = re.sub(r"\\\[\s*([\s\S]*?)\s*\\\]", r"\1", s)
     s = re.sub(r"\\\(\s*(.*?)\s*\\\)", r"\1", s)
-    # Clean \text{...} and \mathrm{...}
     s = re.sub(r"\\(?:text|mathrm|mathbf)\{([^}]*)\}", r"\1", s)
-    # Convert \frac{a}{b} -> (a / b)
     s = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"(\1 / \2)", s)
-    # Convert \sqrt{x} -> √(x)
     s = re.sub(r"\\sqrt\{([^}]*)\}", r"√(\1)", s)
-    # Common symbols & spacing
     replacements = [
         (r"\\,", ""),
         (r"\\;", " "),
@@ -582,7 +576,6 @@ def sanitize_response(text: str, allow_identity_intro: bool = False) -> str:
         if phrase in cleaned:
             cleaned = cleaned.replace(phrase, MODEL_NAME)
 
-    # Strip unprompted "Hello! I'm Daedalus, developed by AstroVectAI, not ChatGPT..." openers
     if not allow_identity_intro:
         cleaned = re.sub(
             r"^\s*(?:(?:Hello|Hi|Hey|Greetings)[!,\.]?\s*)?(?:I am|I'm|I’m)\s+Daedalus(?:,\s*developed by AstroVectAI)?(?:,\s*not ChatGPT)?[\.\!]?\s*(?:How can I help you[^\n\?\!]*[\?\!]?\s*)?(?:---\s*)?",
@@ -1018,7 +1011,7 @@ def check_imap_for_cashapp_receipt(payment_code: str, expected_plan: str) -> Opt
 
 
 # ---------------------------------------------------------------------------
-# PARALLEL MULTI-SOURCE RAG & FACT-CHECKING ENGINE (NEWS + REDDIT + WIKIPEDIA + WEB)
+# REAL-TIME MULTI-SOURCE RAG & CHRONOLOGICAL NEWS ENGINE
 # ---------------------------------------------------------------------------
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -1041,6 +1034,16 @@ def clean_html(html: str, max_chars: int = 2000) -> str:
     text = re.sub(r'<[^>]+>', ' ', text)
     text = unescape(text)
     return re.sub(r'\s+', ' ', text).strip()[:max_chars]
+
+
+def parse_rss_timestamp(pub_date_str: str) -> float:
+    if not pub_date_str:
+        return 0.0
+    try:
+        dt = parsedate_to_datetime(pub_date_str.strip())
+        return dt.timestamp()
+    except Exception:
+        return 0.0
 
 
 async def fetch_tiktok_video_data(url: str) -> Optional[Dict[str, str]]:
@@ -1119,11 +1122,21 @@ def is_personal_or_account_query(text: str) -> bool:
 
 def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[str]:
     """
-    Extracts targeted search queries from the full prompt without cutting off at 90 characters,
-    stripping out memory instructions ('In this chat, remember...') and math sub-prompts.
+    Splits multi-entity prompts (e.g. 'SpaceX and NASA') into dedicated, high-recency
+    search queries so Starship Flight 14 and current week news are never diluted.
     """
-    queries = []
+    queries: List[str] = []
+    lower_u = user_text.lower()
+    now_year = datetime.now(timezone.utc).year
+    now_month = datetime.now(timezone.utc).strftime("%B")
 
+    # Dedicated high-precision queries when asking about SpaceX / Starship / NASA
+    if "spacex" in lower_u or "starship" in lower_u:
+        queries.append(f"SpaceX Starship Flight latest launch news {now_month} {now_year}")
+    if "nasa" in lower_u:
+        queries.append(f"NASA mission news {now_month} {now_year}")
+
+    # Strip out memory/meta sentences and math sub-prompts
     cleaned = re.sub(
         r'in this chat[^\.!\?\n]*[\.!\?\n]*',
         ' ',
@@ -1140,35 +1153,115 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
     sentences = [s.strip() for s in re.split(r'[\.!\?\n]+', cleaned) if len(s.strip()) > 4]
     for s in sentences:
         s_lower = s.lower()
-        if any(m_word in s_lower for m_word in ["orbital velocity", "km/s", "altitude of", "vis-viva"]):
+        if any(m_word in s_lower for m_word in ["orbital velocity", "km/s", "altitude of", "vis-viva", "python function", "compute that"]):
             continue
         s_clean = re.sub(r'\s+', ' ', s).strip()
-        if len(s_clean) > 4:
+        if len(s_clean) > 4 and s_clean[:100] not in queries:
             queries.append(s_clean[:100])
-
-    cap_words = re.findall(r'\b[A-Z][A-Za-z0-9\-]{2,}\b', cleaned)
-    stop_caps = {"In", "First", "Second", "Third", "The", "This", "That", "What", "Who", "Where", "When", "Why", "How"}
-    entities = [w for w in cap_words if w not in stop_caps]
-    if entities:
-        entity_query = " ".join(dict.fromkeys(entities))
-        if "news" in user_text.lower() or "latest" in user_text.lower() or "week" in user_text.lower():
-            entity_query += " latest news 2026"
-        if entity_query not in queries:
-            queries.insert(0, entity_query[:100])
 
     if not queries:
         user_turns = [m["content"] for m in messages if m.get("role") == "user"]
         combined = " ".join(user_turns[-2:])
         queries.append(re.sub(r'\s+', ' ', combined).strip()[:100])
 
-    lower_u = user_text.lower()
-    if any(k in lower_u for k in ["why is everyone calling", "meme", "gay", "drama", "tiktok", "youtuber", "creator"]):
+    if any(k in lower_u for k in ["why is everyone calling", "meme", "drama", "tiktok", "youtuber", "creator"]):
         queries.append(f"{queries[0][:60]} tiktok reddit")
 
-    return queries[:3]
+    return queries[:4]
 
 
-async def query_reddit_search(query: str) -> List[Dict[str, str]]:
+async def query_google_news_rss(query: str, recent_only: bool = True) -> List[Dict[str, Any]]:
+    """
+    Fetches Google News RSS with `when:14d` recency filter and sorts all items
+    strictly newest-first by their RFC-2822 publication timestamp.
+    """
+    results: List[Dict[str, Any]] = []
+    try:
+        async with httpx.AsyncClient(timeout=4.5, follow_redirects=True, headers=BROWSER_HEADERS) as http:
+            q_str = f"{query} when:14d" if recent_only and "when:" not in query else query
+            q_enc = urllib.parse.quote_plus(q_str)
+            rss_url = f"https://news.google.com/rss/search?q={q_enc}&hl=en-US&gl=US&ceid=US:en"
+            r = await http.get(rss_url)
+            if r.status_code == 200:
+                root = ET.fromstring(r.text)
+                raw_items = []
+                for item in root.findall(".//item"):
+                    title = unescape(re.sub(r'<[^>]+>', '', item.findtext("title") or "")).strip()
+                    link = (item.findtext("link") or "").strip()
+                    desc = unescape(re.sub(r'<[^>]+>', '', item.findtext("description") or "")).strip()
+                    pub_raw = (item.findtext("pubDate") or "").strip()
+                    ts = parse_rss_timestamp(pub_raw)
+                    pub_short = pub_raw[:16]
+                    source = item.findtext("source") or "Google News"
+                    if title and link:
+                        raw_items.append({
+                            "title": f"{title} ({pub_short})" if pub_short else title,
+                            "url": link,
+                            "snippet": desc[:320],
+                            "site": source,
+                            "ts": ts,
+                        })
+                # Sort newest-first so Flight 14 / this week's articles always rank above older flights
+                raw_items.sort(key=lambda x: x.get("ts", 0.0), reverse=True)
+                results = raw_items[:5]
+    except Exception:
+        pass
+    return results
+
+
+async def query_aerospace_live_rss(query: str) -> List[Dict[str, Any]]:
+    """
+    Directly checks live aerospace feeds (Spaceflight Now, NASASpaceFlight, SpaceNews)
+    when the query involves SpaceX, Starship, NASA, rockets, or orbits.
+    """
+    q_low = query.lower()
+    if not any(k in q_low for k in ["spacex", "starship", "nasa", "rocket", "launch", "orbit", "artemis", "falcon"]):
+        return []
+
+    feeds = [
+        ("Spaceflight Now", "https://spaceflightnow.com/feed/"),
+        ("NASASpaceFlight", "https://www.nasaspaceflight.com/feed/"),
+        ("SpaceNews", "https://spacenews.com/feed/"),
+    ]
+    results: List[Dict[str, Any]] = []
+
+    async def fetch_feed(source_name: str, feed_url: str):
+        items_out = []
+        try:
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
+                r = await http.get(feed_url)
+                if r.status_code == 200:
+                    root = ET.fromstring(r.text)
+                    for item in root.findall(".//item")[:8]:
+                        title = unescape(re.sub(r'<[^>]+>', '', item.findtext("title") or "")).strip()
+                        link = (item.findtext("link") or "").strip()
+                        desc = unescape(re.sub(r'<[^>]+>', '', item.findtext("description") or "")).strip()
+                        pub_raw = (item.findtext("pubDate") or "").strip()
+                        ts = parse_rss_timestamp(pub_raw)
+                        pub_short = pub_raw[:16]
+                        combined = f"{title} {desc}".lower()
+                        if any(k in combined for k in ["spacex", "starship", "flight", "nasa", "launch", "booster", "orbital"]):
+                            items_out.append({
+                                "title": f"{title} ({pub_short})" if pub_short else title,
+                                "url": link,
+                                "snippet": desc[:340],
+                                "site": source_name,
+                                "ts": ts,
+                            })
+        except Exception:
+            pass
+        return items_out
+
+    batches = await asyncio.gather(*(fetch_feed(name, url) for name, url in feeds), return_exceptions=True)
+    for b in batches:
+        if isinstance(b, list):
+            results.extend(b)
+
+    results.sort(key=lambda x: x.get("ts", 0.0), reverse=True)
+    return results[:5]
+
+
+async def query_reddit_search(query: str) -> List[Dict[str, Any]]:
     results = []
     try:
         reddit_headers = {
@@ -1176,7 +1269,7 @@ async def query_reddit_search(query: str) -> List[Dict[str, str]]:
             "Accept": "application/json"
         }
         q_enc = urllib.parse.quote_plus(query)
-        url = f"https://www.reddit.com/search.json?q={q_enc}&sort=relevance&limit=3"
+        url = f"https://www.reddit.com/search.json?q={q_enc}&sort=new&t=month&limit=3"
         async with httpx.AsyncClient(timeout=4.5, follow_redirects=True, headers=reddit_headers) as http:
             r = await http.get(url)
             if r.status_code == 200:
@@ -1186,55 +1279,30 @@ async def query_reddit_search(query: str) -> List[Dict[str, str]]:
                     selftext = unescape(clean_html(d.get("selftext", ""), 320))
                     sub = d.get("subreddit_name_prefixed", "r/Reddit")
                     permalink = d.get("permalink", "")
+                    created_utc = float(d.get("created_utc") or 0.0)
                     post_url = f"https://www.reddit.com{permalink}" if permalink else d.get("url", "")
                     body_text = f"[{sub}] {title} — {selftext}"
                     results.append({
                         "title": f"Reddit ({sub}): {title[:75]}",
                         "url": post_url,
                         "snippet": body_text[:320],
-                        "site": "reddit.com"
+                        "site": "reddit.com",
+                        "ts": created_utc,
                     })
     except Exception:
         pass
     return results
 
 
-async def query_google_news_rss(query: str) -> List[Dict[str, str]]:
-    results = []
-    try:
-        async with httpx.AsyncClient(timeout=4.5, follow_redirects=True, headers=BROWSER_HEADERS) as http:
-            q_enc = urllib.parse.quote_plus(query)
-            rss_url = f"https://news.google.com/rss/search?q={q_enc}&hl=en-US&gl=US&ceid=US:en"
-            r = await http.get(rss_url)
-            if r.status_code == 200:
-                root = ET.fromstring(r.text)
-                for item in root.findall(".//item")[:4]:
-                    title = unescape(re.sub(r'<[^>]+>', '', item.findtext("title") or "")).strip()
-                    link = (item.findtext("link") or "").strip()
-                    desc = unescape(re.sub(r'<[^>]+>', '', item.findtext("description") or "")).strip()
-                    pub_date = (item.findtext("pubDate") or "")[:16]
-                    source = item.findtext("source") or "News"
-                    if title and link:
-                        results.append({
-                            "title": f"{title} ({pub_date})" if pub_date else title,
-                            "url": link,
-                            "snippet": desc[:300],
-                            "site": source
-                        })
-    except Exception:
-        pass
-    return results
-
-
-async def query_wikipedia_science(query: str) -> List[Dict[str, str]]:
+async def query_wikipedia_science(query: str) -> List[Dict[str, Any]]:
     results = []
     try:
         async with httpx.AsyncClient(timeout=4.5, headers=BROWSER_HEADERS) as http:
             q_enc = urllib.parse.quote_plus(query)
-            wiki_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={q_enc}&format=json&utf8=&srlimit=3"
+            wiki_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={q_enc}&format=json&utf8=&srlimit=2"
             r = await http.get(wiki_url)
             if r.status_code == 200:
-                for item in r.json().get("query", {}).get("search", [])[:3]:
+                for item in r.json().get("query", {}).get("search", [])[:2]:
                     page_title = item.get("title", "")
                     clean_snip = clean_html(item.get("snippet", ""), 320)
                     if page_title:
@@ -1243,17 +1311,18 @@ async def query_wikipedia_science(query: str) -> List[Dict[str, str]]:
                             "url": f"https://en.wikipedia.org/wiki/{urllib.parse.quote(page_title.replace(' ', '_'))}",
                             "snippet": clean_snip,
                             "site": "en.wikipedia.org",
+                            "ts": 0.0,
                         })
     except Exception:
         pass
     return results
 
 
-async def query_ddg_lite(query: str) -> List[Dict[str, str]]:
+async def query_ddg_lite(query: str) -> List[Dict[str, Any]]:
     results = []
     try:
         async with httpx.AsyncClient(timeout=4.5, follow_redirects=True, headers=BROWSER_HEADERS) as http:
-            res = await http.post("https://lite.duckduckgo.com/lite/", data={"q": query})
+            res = await http.post("https://lite.duckduckgo.com/lite/", data={"q": query, "df": "m"})
             if res.status_code == 200:
                 html_text = res.text
                 links = re.findall(r'<a[^>]+class=[\'"]result-link[\'"][^>]+href=[\'"]([^\'"]+)[\'"][^>]*>(.*?)</a>', html_text, re.IGNORECASE | re.DOTALL)
@@ -1272,24 +1341,26 @@ async def query_ddg_lite(query: str) -> List[Dict[str, str]]:
                             "title": clean_title,
                             "url": url,
                             "snippet": clean_snippet[:300],
-                            "site": urllib.parse.urlparse(url).netloc
+                            "site": urllib.parse.urlparse(url).netloc,
+                            "ts": 1.0,
                         })
     except Exception:
         pass
     return results
 
 
-async def execute_python_rag(query: str, max_sources: int = 7, include_news: bool = True) -> List[Dict[str, str]]:
+async def execute_python_rag(query: str, max_sources: int = 8, include_news: bool = True) -> List[Dict[str, Any]]:
     tasks = [
+        query_aerospace_live_rss(query),
         query_reddit_search(query),
-        query_wikipedia_science(query),
         query_ddg_lite(query),
+        query_wikipedia_science(query),
     ]
     if include_news:
-        tasks.insert(0, query_google_news_rss(query))
+        tasks.insert(0, query_google_news_rss(query, recent_only=True))
 
     batches = await asyncio.gather(*tasks, return_exceptions=True)
-    sources: List[Dict[str, str]] = []
+    sources: List[Dict[str, Any]] = []
     for b in batches:
         if isinstance(b, list):
             sources.extend(b)
@@ -1299,7 +1370,7 @@ async def execute_python_rag(query: str, max_sources: int = 7, include_news: boo
             async with httpx.AsyncClient(timeout=4.5) as http:
                 r = await http.post(
                     "https://api.tavily.com/search",
-                    json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 4},
+                    json={"api_key": TAVILY_API_KEY, "query": query, "topic": "news", "days": 14, "max_results": 4},
                 )
                 if r.status_code == 200:
                     for item in r.json().get("results", []):
@@ -1308,6 +1379,7 @@ async def execute_python_rag(query: str, max_sources: int = 7, include_news: boo
                             "url": item.get("url", ""),
                             "snippet": item.get("content", "")[:320],
                             "site": urllib.parse.urlparse(item.get("url", "")).netloc,
+                            "ts": time_now_ts(),
                         })
         except Exception:
             pass
@@ -1319,6 +1391,9 @@ async def execute_python_rag(query: str, max_sources: int = 7, include_news: boo
         if u and u not in seen:
             seen.add(u)
             unique_sources.append(s)
+
+    # Sort all collected sources so newest timestamped articles appear first
+    unique_sources.sort(key=lambda x: x.get("ts", 0.0), reverse=True)
 
     top_to_crawl = unique_sources[:2]
     if top_to_crawl:
@@ -1332,6 +1407,10 @@ async def execute_python_rag(query: str, max_sources: int = 7, include_news: boo
                 unique_sources[idx]["url"] = crawled["url"]
 
     return unique_sources[:max_sources]
+
+
+def time_now_ts() -> float:
+    return datetime.now(timezone.utc).timestamp()
 
 
 # ---------------------------------------------------------------------------
@@ -1596,7 +1675,7 @@ async def history(
 
 
 # ---------------------------------------------------------------------------
-# CHAT ENDPOINT (MULTI-SOURCE FACT CHECKING + PER-CHAT MEMORY + STEM ENGINE)
+# CHAT ENDPOINT (CHRONOLOGICAL FACT CHECKING + PER-CHAT MEMORY + STEM ENGINE)
 # ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
@@ -1636,7 +1715,6 @@ async def chat(
         messages = build_messages_for_conversation(db, user, conv)
         lowered_text = user_text.lower().strip()
 
-        # Only reply with the "not ChatGPT" line if the user literally greeted it as ChatGPT
         if is_direct_chatgpt_greeting(user_text):
             if len(lowered_text.split()) <= 3:
                 final = "I am Daedalus, developed by AstroVectAI, not ChatGPT. What are we building or solving today?"
@@ -1664,7 +1742,7 @@ async def chat(
                 "content": STEM_AND_ENGINEERING_DIRECTIVE + blueprint_section
             })
 
-        # Multi-Source Fact-Checking RAG
+        # Multi-Source Fact-Checking RAG (Parallel Execution Across Sub-Queries)
         live_sources = []
         search_queries = [user_text]
         should_run_rag = not is_personal_or_account_query(user_text) and (
@@ -1672,13 +1750,14 @@ async def chat(
             or bool(extract_urls(user_text))
             or any(w in lowered_text for w in [
                 "docs", "documentation", "latest", "2026", "search", "news",
-                "mission", "nasa", "spacex", "data", "constant", "fact-check", "fact check", "this week"
+                "mission", "nasa", "spacex", "starship", "flight", "data",
+                "constant", "fact-check", "fact check", "this week", "today"
             ])
         )
 
         if should_run_rag:
             try:
-                max_src = 8 if user_plan == "premium" else 6
+                max_src = 10 if user_plan == "premium" else 8
                 search_queries = generate_smart_search_queries(messages, user_text)
                 urls_in_prompt = extract_urls(user_text)
                 for u in urls_in_prompt[:2]:
@@ -1689,14 +1768,21 @@ async def chat(
                             "content": f"USER PROVIDED LIVE WEBPAGE / TIKTOK ({page['url']}):\n{page['content']}"
                         })
 
-                for q in search_queries:
-                    found = await execute_python_rag(q, max_sources=max_src, include_news=True)
-                    if found:
-                        for item in found:
-                            if item["url"] not in [s["url"] for s in live_sources]:
+                # Run all generated sub-queries in parallel so SpaceX AND NASA both get fresh results
+                query_batches = await asyncio.gather(
+                    *(execute_python_rag(q, max_sources=5, include_news=True) for q in search_queries),
+                    return_exceptions=True
+                )
+                seen_urls = set()
+                for batch in query_batches:
+                    if isinstance(batch, list):
+                        for item in batch:
+                            if item["url"] not in seen_urls:
+                                seen_urls.add(item["url"])
                                 live_sources.append(item)
-                    if len(live_sources) >= max_src:
-                        break
+
+                # Sort combined sources newest-first so latest flights/news are at the top
+                live_sources.sort(key=lambda x: x.get("ts", 0.0), reverse=True)
 
                 if live_sources:
                     formatted_sources = []
@@ -1707,16 +1793,17 @@ async def chat(
                             f"Excerpt: {snippet_or_body[:450]}"
                         )
 
-                    rag_block = "MULTI-SOURCE LIVE WEB & NEWS FACT-CHECK INDEX:\n" + "\n\n".join(formatted_sources)
+                    rag_block = "MULTI-SOURCE LIVE WEB & NEWS FACT-CHECK INDEX (SORTED NEWEST FIRST):\n" + "\n\n".join(formatted_sources)
                     messages.append({
                         "role": "system",
                         "content": (
                             f"{rag_block}\n\n"
-                            "STRICT FACT-CHECKING & CITATION DIRECTIVE:\n"
-                            "1. ONLY report news events, dates, and mission names that explicitly appear in the sources above.\n"
-                            "2. Cite each verified item using the exact URL from the index above: `[Article/Source Title](URL)`. NEVER fabricate generic homepage links like `[SpaceX Official Website](https://www.spacex.com)`.\n"
-                            "3. Format each news item as a clean bullet point (`• **Agency / Topic (Date):** Summary — [Source](URL)`). Do NOT use markdown tables.\n"
-                            "4. Answer ALL parts of the user's prompt (both news/fact-checking AND any math/physics calculations requested)."
+                            "STRICT CHRONOLOGICAL FACT-CHECKING & CITATION DIRECTIVE:\n"
+                            "1. The sources above are sorted NEWEST-FIRST. Always report the highest/latest flight number (e.g., Starship Flight 14 over older flights) and the most recent dates from this week.\n"
+                            "2. ONLY report news events, dates, and mission names that explicitly appear in the sources above.\n"
+                            "3. Cite each verified item using the exact URL from the index above: `[Article/Source Title](URL)`. NEVER fabricate generic homepage links like `[SpaceX Official Website](https://www.spacex.com)`.\n"
+                            "4. Format each news item as a clean bullet point (`• **Agency / Topic (Date):** Summary — [Source](URL)`). Do NOT use markdown tables.\n"
+                            "5. Answer ALL parts of the user's prompt (both news/fact-checking AND any math/physics/coding tasks requested)."
                         )
                     })
             except Exception as rag_err:
@@ -1765,12 +1852,12 @@ async def chat(
             try:
                 if not live_sources:
                     fallback_q = " ".join(generate_smart_search_queries(messages, user_text)[:1])
-                    live_sources = await execute_python_rag(fallback_q, max_sources=5, include_news=True)
+                    live_sources = await execute_python_rag(fallback_q, max_sources=6, include_news=True)
 
                 src_text = ""
                 if live_sources:
                     src_text = "\n\nLIVE WEB SOURCES:\n" + "\n".join(
-                        f"- [{s['title']}]({s['url']}): {s.get('snippet', '')}" for s in live_sources[:5]
+                        f"- [{s['title']}]({s['url']}): {s.get('snippet', '')}" for s in live_sources[:6]
                     )
 
                 now_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y at %H:%M UTC")
