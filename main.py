@@ -2,6 +2,7 @@ import os
 import re
 import secrets
 import base64
+import hashlib
 import io
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -11,8 +12,8 @@ from typing import List, Optional, Dict, Any
 
 import httpx
 import stripe
-from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -41,6 +42,10 @@ SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
 APP_URL = os.getenv("APP_URL", "").rstrip("/")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
+
+# X (Twitter) OAuth 2.0 Credentials
+X_CLIENT_ID = os.getenv("X_CLIENT_ID", "")
+X_CLIENT_SECRET = os.getenv("X_CLIENT_SECRET", "")
 
 # Search Grounding API Keys (Optional)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -91,10 +96,10 @@ SYSTEM_PROMPT = (
     "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
     "   - Present all information using clean natural prose or standard bullet points (`•`).\n"
     "7. CREATOR, MEME & INTERNET CULTURE RULES:\n"
-    "   - When asked about internet creators, YouTubers, TikTokers, streamers, or viral memes (e.g., Surronster, MrBeast, e-bike TikTok trends):\n"
+    "   - When asked about internet creators, YouTubers, TikTokers, streamers, or viral memes:\n"
     "     1. Explain the actual online context: viral comment section trolling, running jokes, wiki vandalism, or creator response videos.\n"
     "     2. NEVER invent fake slang definitions (e.g., NEVER claim that 'gay' means 'cool' or 'awesome').\n"
-    "     3. DO NOT deliver unsolicited lectures on reporting harassment or platform moderation guidelines unless the user explicitly asks how to report someone.\n"
+    "     3. DO NOT deliver unsolicited lectures on reporting harassment or platform moderation guidelines.\n"
     "8. ZERO HALLUCINATION & FACTUAL ACCURACY:\n"
     "   - NEVER fabricate pseudo-scientific terms (like 'water-spume cloud').\n"
     "   - NEVER stubbornly defend an earlier incorrect message if contradicted by verified search facts.\n"
@@ -133,6 +138,10 @@ class User(Base):
     verify_token = Column(String(100), nullable=True)
     stripe_customer_id = Column(String(100), nullable=True)
     memory = Column(Text, nullable=True)
+    # X (Twitter) OAuth 2.0 Fields
+    x_access_token = Column(String(500), nullable=True)
+    x_refresh_token = Column(String(500), nullable=True)
+    x_username = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
 
@@ -185,16 +194,22 @@ def create_access_token(user_id: int) -> str:
     return jwt.encode({"sub": str(user_id), "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
 
 
+def decode_user_id_from_token(token_str: str) -> Optional[int]:
+    try:
+        payload = jwt.decode(token_str, SECRET_KEY, algorithms=[ALGORITHM])
+        return int(payload.get("sub", 0))
+    except Exception:
+        return None
+
+
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db),
-):
+) -> User:
     if not credentials:
         raise HTTPException(status_code=401, detail="Not logged in")
-    try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = int(payload.get("sub", 0))
-    except (JWTError, ValueError):
+    user_id = decode_user_id_from_token(credentials.credentials)
+    if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -325,6 +340,9 @@ def user_context_block(user: User) -> str:
             "but do not force their name into greetings or every response."
         )
 
+    if user.x_username:
+        parts.append(f"The user's connected X (Twitter) account is @{user.x_username}.")
+
     if user.birthday:
         parts.append(
             f"Their birthday is {user.birthday.isoformat()} "
@@ -413,7 +431,46 @@ def user_public(user: User) -> dict:
         "can_images": can_use_images(plan),
         "default_model": resolve_model_for_user(plan),
         "can_switch_models": plan in ("plus", "premium"),
+        "x_connected": bool(user.x_access_token),
+        "x_username": user.x_username,
     }
+
+
+# ---------------------------------------------------------------------------
+# X (TWITTER) OAUTH 2.0 & POSTING ENGINE
+# ---------------------------------------------------------------------------
+async def execute_x_post(user: User, tweet_text: str) -> Dict[str, Any]:
+    """Posts a tweet to X using the user's stored OAuth 2.0 access token."""
+    if not user.x_access_token:
+        return {"error": "X account not linked. Please connect your X account first."}
+
+    clean_text = tweet_text.strip()[:280]
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        try:
+            r = await http.post(
+                "https://api.twitter.com/2/tweets",
+                headers={
+                    "Authorization": f"Bearer {user.x_access_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"text": clean_text},
+            )
+            if r.status_code in (200, 201):
+                data = r.json()
+                tweet_id = data.get("data", {}).get("id")
+                handle = user.x_username or "i"
+                return {
+                    "success": True,
+                    "id": tweet_id,
+                    "url": f"https://x.com/{handle}/status/{tweet_id}",
+                    "text": clean_text,
+                }
+            elif r.status_code == 401:
+                return {"error": "X access token expired. Please disconnect and reconnect your X account."}
+            else:
+                return {"error": f"X API error ({r.status_code}): {r.text}"}
+        except Exception as e:
+            return {"error": f"Failed to post to X: {str(e)}"}
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +500,6 @@ def clean_html(html: str, max_chars: int = 3000) -> str:
 
 
 async def fetch_tiktok_video_data(url: str) -> Optional[Dict[str, str]]:
-    """Uses TikTok's official public oEmbed API to extract video caption and creator metadata."""
     try:
         async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
             oembed_url = f"https://www.tiktok.com/oembed?url={urllib.parse.quote(url)}"
@@ -467,7 +523,6 @@ async def fetch_tiktok_video_data(url: str) -> Optional[Dict[str, str]]:
 
 
 async def fetch_webpage_content(url: str, max_chars: int = 2500) -> Optional[Dict[str, str]]:
-    """Crawls a live web URL, resolves Google News wrappers, and handles TikTok videos."""
     if "tiktok.com" in url:
         tiktok_data = await fetch_tiktok_video_data(url)
         if tiktok_data:
@@ -506,7 +561,6 @@ async def fetch_webpage_content(url: str, max_chars: int = 2500) -> Optional[Dic
 
 
 def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[str]:
-    """Generates search queries targeting creator drama, TikTok memes, and news topics."""
     user_turns = [m["content"] for m in messages if m.get("role") == "user"]
     queries = []
 
@@ -560,7 +614,6 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
 
 
 async def query_reddit_search(query: str) -> List[Dict[str, str]]:
-    """Searches Reddit discussions for creator drama, TikTok memes, and community context."""
     results = []
     try:
         reddit_headers = {
@@ -750,6 +803,138 @@ async def home(request: Request):
     )
 
 
+# ---------------------------------------------------------------------------
+# X (TWITTER) OAUTH 2.0 PKCE ROUTES
+# ---------------------------------------------------------------------------
+@app.get("/auth/x/login")
+async def x_login(
+    token: Optional[str] = Query(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db)
+):
+    """Generates the official X OAuth 2.0 PKCE authorization URL."""
+    auth_token = token or (credentials.credentials if credentials else None)
+    if not auth_token:
+        raise HTTPException(status_code=401, detail="Authentication token required to link X account")
+
+    user_id = decode_user_id_from_token(auth_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid session token")
+
+    if not X_CLIENT_ID:
+        return HTMLResponse(
+            "<h2>X OAuth Not Configured</h2>"
+            "<p>Please set <code>X_CLIENT_ID</code> and <code>X_CLIENT_SECRET</code> in your environment variables.</p>"
+            "<p><a href='/'>Return to Daedalus</a></p>",
+            status_code=500
+        )
+
+    code_verifier = secrets.token_urlsafe(32)
+    code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).decode().rstrip("=")
+
+    redirect_uri = f"{APP_URL}/auth/x/callback"
+    scope = "tweet.read tweet.write users.read offline.access"
+    state = f"{user_id}_{code_verifier}"
+
+    x_auth_url = (
+        f"https://twitter.com/i/oauth2/authorize?response_type=code"
+        f"&client_id={X_CLIENT_ID}"
+        f"&redirect_uri={urllib.parse.quote(redirect_uri)}"
+        f"&scope={urllib.parse.quote(scope)}"
+        f"&state={state}"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
+    )
+    return RedirectResponse(url=x_auth_url)
+
+
+@app.get("/auth/x/callback")
+async def x_callback(
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Exchanges X auth code for access token and updates user profile."""
+    if error:
+        return HTMLResponse(f"<h2>X Authorization Error</h2><p>{error}</p><p><a href='/'>Return to Daedalus</a></p>", status_code=400)
+
+    if not code or not state:
+        return HTMLResponse("<h2>Invalid OAuth callback parameters</h2>", status_code=400)
+
+    try:
+        user_id_str, code_verifier = state.split("_", 1)
+        user = db.query(User).filter(User.id == int(user_id_str)).first()
+        if not user:
+            return HTMLResponse("<h2>User session not found</h2>", status_code=400)
+
+        redirect_uri = f"{APP_URL}/auth/x/callback"
+        auth_header = base64.b64encode(f"{X_CLIENT_ID}:{X_CLIENT_SECRET}".encode()).decode()
+
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            token_res = await http.post(
+                "https://api.twitter.com/2/oauth2/token",
+                headers={
+                    "Authorization": f"Basic {auth_header}",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                data={
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "client_id": X_CLIENT_ID,
+                    "redirect_uri": redirect_uri,
+                    "code_verifier": code_verifier,
+                }
+            )
+            token_data = token_res.json()
+
+            if "access_token" in token_data:
+                access_token = token_data["access_token"]
+                user.x_access_token = access_token
+                user.x_refresh_token = token_data.get("refresh_token")
+
+                # Fetch user's X profile info
+                user_res = await http.get(
+                    "https://api.twitter.com/2/users/me",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+                if user_res.status_code == 200:
+                    profile_data = user_res.json()
+                    user.x_username = profile_data.get("data", {}).get("username")
+
+                db.commit()
+                return RedirectResponse(url="/?x_connected=true")
+            else:
+                return HTMLResponse(f"<h2>Failed to retrieve X token</h2><pre>{token_data}</pre>", status_code=400)
+    except Exception as e:
+        return HTMLResponse(f"<h2>OAuth Callback Error</h2><p>{e}</p>", status_code=500)
+
+
+@app.post("/auth/x/disconnect")
+async def x_disconnect(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Unlinks X credentials from the user account."""
+    user.x_access_token = None
+    user.x_refresh_token = None
+    user.x_username = None
+    db.commit()
+    return JSONResponse({"status": "disconnected"})
+
+
+@app.post("/post-to-x")
+async def post_to_x_endpoint(
+    tweet_text: str = Form(...),
+    user: User = Depends(get_current_user)
+):
+    """Direct API endpoint to post a tweet using the user's linked X account."""
+    res = await execute_x_post(user, tweet_text)
+    if res.get("error"):
+        return JSONResponse({"error": res["error"]}, status_code=400)
+    return JSONResponse(res)
+
+
+# ---------------------------------------------------------------------------
+# Core User Auth & History Routes
+# ---------------------------------------------------------------------------
 @app.post("/register")
 async def register(
     email: str = Form(...),
@@ -1025,14 +1210,38 @@ async def chat(
 
         # Build conversation history
         messages = build_messages_for_conversation(db, user, conv.id)
-
-        # Resolve model according to tier rules (Free locked to 20b)
         active_model = resolve_model_for_user(user.plan or "free", model)
 
-        # Check for direct identity greeting test ("hey chatgpt")
         lowered_text = user_text.lower().strip()
+
+        # Identity test check
         if lowered_text in ["hey chatgpt", "hello chatgpt", "hi chatgpt", "chatgpt"]:
             final = "I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?"
+            db.add(Message(conversation_id=conv.id, role="assistant", content=final))
+            conv.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            return JSONResponse({"reply": final, "title": conv.title, "model": active_model})
+
+        # Post to X intent check
+        post_match = re.search(r'^(?:post|tweet|publish)\s+(?:this\s+)?(?:on|to)\s+(?:x|twitter)\s*[:\-]\s*(.*)$', user_text, flags=re.IGNORECASE)
+        if post_match:
+            draft_text = post_match.group(1).strip().strip('"').strip("'")
+            if user.x_access_token:
+                x_res = await execute_x_post(user, draft_text)
+                if x_res.get("success"):
+                    final = f"Successfully posted to X!\n\n• **Post:** {draft_text}\n• **Link:** [View on X ↗]({x_res['url']})"
+                else:
+                    final = f"Failed to post to X: {x_res.get('error')}"
+            else:
+                user_token = create_access_token(user.id)
+                connect_url = f"/auth/x/login?token={user_token}"
+                intent_url = f"https://x.com/intent/tweet?text={urllib.parse.quote(draft_text)}"
+                final = (
+                    "Your X account isn't connected yet.\n\n"
+                    f"• [Connect your X Account ↗]({connect_url}) to enable direct posting.\n"
+                    f"• Or publish this post manually right now: [Draft on X ↗]({intent_url})"
+                )
+
             db.add(Message(conversation_id=conv.id, role="assistant", content=final))
             conv.updated_at = datetime.now(timezone.utc)
             db.commit()
@@ -1053,7 +1262,6 @@ async def chat(
                         "content": f"USER PROVIDED LIVE WEBPAGE / TIKTOK ({page['url']}):\n{page['content']}"
                     })
 
-            # Search queries across social, news, and creator threads
             for q in search_queries:
                 found = await execute_python_rag(q)
                 if found:
