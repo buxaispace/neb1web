@@ -90,17 +90,16 @@ SYSTEM_PROMPT = (
     "6. FORMATTING RULES (STRICT):\n"
     "   - NEVER use markdown tables (do NOT use `| Detail | Information |` or any table with `|` pipes).\n"
     "   - Present all information using clean natural prose or standard bullet points (`•`).\n"
-    "7. ZERO HALLUCINATION & NO CONVERSATIONAL DEFENSIVENESS:\n"
-    "   - NEVER fabricate pseudo-scientific or imaginary phenomena (e.g., NEVER invent fake terms like 'water-spume cloud').\n"
-    "   - NEVER stubbornly defend an earlier incorrect message if contradicted by verified facts or the user's inquiry.\n"
-    "   - When the user asks about or suggests a specific cause (e.g., 'was it a spacex rocket?', 'was it an earthquake?'):\n"
-    "     Check the verified news sources carefully. If the user's suggestion is correct (e.g., it WAS a SpaceX rocket launch creating a twilight jellyfish cloud), immediately validate and confirm: 'Yes, exactly! It was indeed a SpaceX launch...'\n"
-    "   - Ground every statement directly in the extracted article text provided in the prompt. Do not contradict the very source you are citing.\n"
-    "8. PROACTIVE RECALL & MINIMAL KEYWORD INTELLIGENCE:\n"
-    "   - Users frequently speak in casual shorthand with minimal keywords (e.g., 'what happened to that owen kid', 'the kid with the ebike in september').\n"
-    "   - DO NOT deflect, stall, or repeatedly ask the user for more details if the clues match a known recent event.\n"
-    "   - Proactively connect clues across conversation history (e.g., 14-year-old Owen Harris and the fatal September 12, 2026 e-bike accident in Pacific Beach, San Diego, California).\n"
-    "   - Immediately provide the full, verified factual summary directly.\n"
+    "7. CREATOR, MEME & INTERNET CULTURE RULES:\n"
+    "   - When asked about internet creators, YouTubers, TikTokers, streamers, or viral memes (e.g., Surronster, MrBeast, e-bike TikTok trends):\n"
+    "     1. Explain the actual online context: viral comment section trolling, running jokes, wiki vandalism, or creator response videos.\n"
+    "     2. NEVER invent fake slang definitions (e.g., NEVER claim that 'gay' means 'cool' or 'awesome').\n"
+    "     3. DO NOT deliver unsolicited lectures on reporting harassment or platform moderation guidelines unless the user explicitly asks how to report someone.\n"
+    "8. ZERO HALLUCINATION & FACTUAL ACCURACY:\n"
+    "   - NEVER fabricate pseudo-scientific terms (like 'water-spume cloud').\n"
+    "   - NEVER stubbornly defend an earlier incorrect message if contradicted by verified search facts.\n"
+    "   - When the user asks about a specific cause (e.g., 'was it a spacex rocket?'):\n"
+    "     If verified search sources confirm it was a rocket launch, immediately confirm and explain the facts accurately.\n"
     "9. NO-TOOL DIRECTIVE:\n"
     "   - NEVER output internal tool calls, JSON function calls, or syntax like 'browser.run'.\n"
     "   - Output ONLY direct textual answers.\n"
@@ -418,7 +417,7 @@ def user_public(user: User) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# DEEP ARTICLE CRAWLER & SEARCH ENGINE
+# SOCIAL MEDIA, TIKTOK OEMBED & CREATOR SEARCH ENGINE
 # ---------------------------------------------------------------------------
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -443,15 +442,44 @@ def clean_html(html: str, max_chars: int = 3000) -> str:
     return re.sub(r'\s+', ' ', text).strip()[:max_chars]
 
 
+async def fetch_tiktok_video_data(url: str) -> Optional[Dict[str, str]]:
+    """Uses TikTok's official public oEmbed API to extract video caption and creator metadata."""
+    try:
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
+            oembed_url = f"https://www.tiktok.com/oembed?url={urllib.parse.quote(url)}"
+            res = await http.get(oembed_url)
+            if res.status_code == 200:
+                data = res.json()
+                title = data.get("title", "")
+                author = data.get("author_name", "")
+                handle = data.get("author_unique_id", "")
+                content = f"TikTok Video by @{handle} ({author}):\nCaption / Description: {title}"
+                return {
+                    "title": f"TikTok: @{handle} - {title[:60]}",
+                    "url": url,
+                    "snippet": content[:280],
+                    "content": content,
+                    "site": "tiktok.com"
+                }
+    except Exception as e:
+        print("TikTok oEmbed warning:", e)
+    return None
+
+
 async def fetch_webpage_content(url: str, max_chars: int = 2500) -> Optional[Dict[str, str]]:
-    """Crawls a live web URL, resolves Google News wrappers to direct publisher sites, and extracts text."""
+    """Crawls a live web URL, resolves Google News wrappers, and handles TikTok videos."""
+    if "tiktok.com" in url:
+        tiktok_data = await fetch_tiktok_video_data(url)
+        if tiktok_data:
+            return tiktok_data
+
     try:
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
             res = await http.get(url)
             if res.status_code == 200:
                 html = res.text
 
-                # If this is a Google News redirect wrapper, extract the real destination URL
+                # Resolve Google News redirect wrapper to direct publisher URL
                 if "news.google.com" in url:
                     dest_match = re.search(r'href=[\'"](https?://(?!news\.google\.com)[^\'"]+)[\'"]', html)
                     if dest_match:
@@ -464,7 +492,7 @@ async def fetch_webpage_content(url: str, max_chars: int = 2500) -> Optional[Dic
                 title_match = re.search(r'<title[^>]*>(.*?)</title>', html, flags=re.IGNORECASE | re.DOTALL)
                 title = unescape(title_match.group(1)).strip() if title_match else url
                 body = clean_html(html, max_chars)
-                if body and len(body) > 120:
+                if body and len(body) > 100:
                     return {
                         "title": title[:100],
                         "url": url,
@@ -478,7 +506,7 @@ async def fetch_webpage_content(url: str, max_chars: int = 2500) -> Optional[Dic
 
 
 def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[str]:
-    """Intelligently expands minimal keywords into targeted factual queries across conversational turns."""
+    """Generates search queries targeting creator drama, TikTok memes, and news topics."""
     user_turns = [m["content"] for m in messages if m.get("role") == "user"]
     queries = []
 
@@ -494,10 +522,11 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
     if len(cleaned) > 3:
         queries.append(cleaned)
 
-    # If the user suggested a specific entity (e.g. spacex, rocket)
-    for term in ["spacex", "rocket", "falcon", "launch", "meteor", "ebike", "crash", "florida"]:
-        if term in user_text.lower() and term not in queries[0].lower():
-            queries.append(f"{queries[0]} {term}")
+    # Detect creator / meme keywords
+    lower_u = user_text.lower()
+    if any(k in lower_u for k in ["why is everyone calling", "meme", "gay", "drama", "tiktok", "youtuber", "creator"]):
+        queries.append(f"{cleaned} tiktok meme")
+        queries.append(f"{cleaned} reddit drama")
 
     # Fast LLM Expansion
     if client and len(user_turns) >= 1:
@@ -508,8 +537,7 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
                     "role": "system",
                     "content": (
                         "You are an expert search query formulation engine. Given the user dialogue, output 2 specific 3-to-5-word "
-                        "search queries that will locate the exact event, rocket launch, accident, or news story being discussed. "
-                        "Include specific keywords like 'SpaceX launch Florida' or 'Owen Harris ebike' if relevant. "
+                        "search queries that will locate the exact content creator discussion, TikTok meme, or news story being asked about. "
                         "Output each query on a new line with no quotes or numbers."
                     )
                 },
@@ -529,6 +557,40 @@ def generate_smart_search_queries(messages: List[dict], user_text: str) -> List[
             pass
 
     return queries[:3] if queries else [user_text]
+
+
+async def query_reddit_search(query: str) -> List[Dict[str, str]]:
+    """Searches Reddit discussions for creator drama, TikTok memes, and community context."""
+    results = []
+    try:
+        reddit_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "application/json"
+        }
+        q_enc = urllib.parse.quote_plus(query)
+        url = f"https://www.reddit.com/search.json?q={q_enc}&sort=relevance&limit=4"
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=reddit_headers) as http:
+            r = await http.get(url)
+            if r.status_code == 200:
+                data = r.json()
+                for child in data.get("data", {}).get("children", [])[:4]:
+                    d = child.get("data", {})
+                    title = unescape(d.get("title", ""))
+                    selftext = unescape(clean_html(d.get("selftext", ""), 400))
+                    sub = d.get("subreddit_name_prefixed", "r/Reddit")
+                    permalink = d.get("permalink", "")
+                    post_url = f"https://www.reddit.com{permalink}" if permalink else d.get("url", "")
+                    body_text = f"Discussion on {sub}: {title}\nPost context: {selftext}"
+                    results.append({
+                        "title": f"Reddit ({sub}): {title[:80]}",
+                        "url": post_url,
+                        "snippet": body_text[:280],
+                        "content": body_text,
+                        "site": "reddit.com"
+                    })
+    except Exception as e:
+        print("Reddit search warning:", e)
+    return results
 
 
 async def query_google_news_rss(query: str) -> List[Dict[str, str]]:
@@ -560,12 +622,17 @@ async def query_google_news_rss(query: str) -> List[Dict[str, str]]:
 async def execute_python_rag(query: str) -> List[Dict[str, str]]:
     sources: List[Dict[str, str]] = []
 
-    # 1. Google News RSS
+    # 1. Reddit Social & Creator Search
+    reddit_res = await query_reddit_search(query)
+    if reddit_res:
+        sources.extend(reddit_res)
+
+    # 2. Google News RSS
     news_res = await query_google_news_rss(query)
     if news_res:
         sources.extend(news_res)
 
-    # 2. Tavily API
+    # 3. Tavily API
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -584,7 +651,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("Tavily warning:", e)
 
-    # 3. Serper API
+    # 4. Serper API
     if SERPER_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=6.0) as http:
@@ -604,7 +671,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("Serper warning:", e)
 
-    # 4. Native DDGS
+    # 5. Native DDGS
     if HAS_DDGS:
         try:
             with DDGS() as ddgs:
@@ -620,7 +687,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         except Exception as e:
             print("DDGS warning:", e)
 
-    # 5. Standalone DuckDuckGo Lite HTTP Search
+    # 6. Standalone DuckDuckGo Lite HTTP Search
     try:
         async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, headers=BROWSER_HEADERS) as http:
             res = await http.post("https://lite.duckduckgo.com/lite/", data={"q": query})
@@ -663,7 +730,7 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
         crawled = await fetch_webpage_content(s["url"])
         if crawled and crawled.get("content"):
             s["content"] = crawled["content"]
-            s["url"] = crawled["url"]  # Replace wrapper with direct publisher URL
+            s["url"] = crawled["url"]
 
     return unique_sources[:4]
 
@@ -983,10 +1050,10 @@ async def chat(
                 if page:
                     messages.append({
                         "role": "system",
-                        "content": f"USER PROVIDED LIVE WEBPAGE ({page['url']}):\n{page['content']}"
+                        "content": f"USER PROVIDED LIVE WEBPAGE / TIKTOK ({page['url']}):\n{page['content']}"
                     })
 
-            # Search queries in parallel / sequence
+            # Search queries across social, news, and creator threads
             for q in search_queries:
                 found = await execute_python_rag(q)
                 if found:
@@ -1012,10 +1079,8 @@ async def chat(
                     "content": (
                         f"{rag_block}\n\n"
                         "STRICT GROUNDING & ACCURACY DIRECTIVES:\n"
-                        "1. Base your answer directly on the verified article excerpts above.\n"
-                        "2. If the user suggests or asks about a specific cause (e.g., 'was it a spacex rocket?'):\n"
-                        "   - Check the sources. If the sources confirm it was a rocket launch / SpaceX, immediately confirm and explain the facts accurately.\n"
-                        "   - DO NOT deny the SpaceX launch or invent fake phenomena like 'water-spume cloud'.\n"
+                        "1. Base your answer directly on the verified article and social excerpts above.\n"
+                        "2. If asked about a creator, YouTuber, or meme trend, explain the actual online context (comment section trolling, running jokes, or rumors). Do NOT invent fake slang definitions and do NOT lecture on reporting harassment.\n"
                         "3. Directly answer the user's question without stalling or repeatedly asking for more details.\n"
                         "4. Cite sources using clean markdown links [Source Title](URL).\n"
                         "5. Do NOT use markdown tables (no `| Detail | Information |`). Output clean paragraphs and bullet points."
