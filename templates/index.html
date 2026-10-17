@@ -675,7 +675,7 @@
       background: var(--accent);
       color: var(--accent-text);
     }
-    .plan-box button:disabled { background: #27272a; color: var(--muted); cursor: default; }
+    .plan-box button:disabled { background: #27272a; color: var(--muted); cursor: not-allowed; opacity: 0.7; }
 
     /* Cash App Checkout Step Box */
     #cashapp-checkout-box {
@@ -902,7 +902,7 @@
               <li>• Multi-chat memory</li>
             </ul>
           </div>
-          <button type="button" disabled id="btn-free">Current / included</button>
+          <button type="button" disabled id="btn-free">Current plan</button>
         </div>
         <div class="plan-box">
           <div>
@@ -1134,11 +1134,29 @@
         tab120b.classList.remove("active");
       }
 
-      if (userPlan === "plus") { btnPlus.disabled = true; btnPlus.textContent = "Current plan"; }
-      else { btnPlus.disabled = false; btnPlus.textContent = "Upgrade to Plus"; }
-      if (userPlan === "premium") { btnPremium.disabled = true; btnPremium.textContent = "Current plan"; }
-      else { btnPremium.disabled = false; btnPremium.textContent = "Upgrade to Premium"; }
-      btnFree.textContent = userPlan === "free" ? "Current plan" : "Included at free";
+      // Tier-specific Plan Buttons Logic
+      if (userPlan === "premium") {
+        btnFree.disabled = true;
+        btnFree.textContent = "You already have Premium";
+        btnPlus.disabled = true;
+        btnPlus.textContent = "You already have Premium";
+        btnPremium.disabled = true;
+        btnPremium.textContent = "Current plan";
+      } else if (userPlan === "plus") {
+        btnFree.disabled = true;
+        btnFree.textContent = "You already have Plus";
+        btnPlus.disabled = true;
+        btnPlus.textContent = "Current plan";
+        btnPremium.disabled = false;
+        btnPremium.textContent = "Upgrade to Premium";
+      } else {
+        btnFree.disabled = true;
+        btnFree.textContent = "Current plan";
+        btnPlus.disabled = false;
+        btnPlus.textContent = "Upgrade to Plus";
+        btnPremium.disabled = false;
+        btnPremium.textContent = "Upgrade to Premium";
+      }
     }
 
     tab20b.addEventListener("click", function () {
@@ -1331,13 +1349,11 @@
           selectedModel = "gpt-oss-120b";
           localStorage.setItem("daedalus_selected_model", selectedModel);
           applyPlanUI();
-          cashappStatusMsg.textContent = data.message || "Payment verified!";
+          cashappStatusMsg.textContent = (data.message || "Payment verified!") + " Refreshing...";
           cashappStatusMsg.style.color = "var(--green)";
           setTimeout(() => {
-            plansModal.classList.remove("open");
-            cashappBox.style.display = "none";
-            addMessage("system", data.message || ("Upgraded to " + userPlan.toUpperCase() + "!"));
-          }, 1200);
+            window.location.reload();
+          }, 1000);
         } else if (manualClick) {
           cashappStatusMsg.textContent = data.error || data.message || "Receipt not detected yet. Retrying automatically...";
         }
@@ -1353,6 +1369,8 @@
     });
 
     async function startCheckout(plan) {
+      if (userPlan === "premium") return;
+      if (userPlan === "plus" && plan === "plus") return;
       try {
         const form = new FormData();
         form.append("plan", plan);
