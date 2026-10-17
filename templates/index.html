@@ -222,7 +222,7 @@
   <div id="auth-screen">
     <div class="auth-card">
       <div class="auth-logo"></div>
-      <h1>Nebula 1</h1>
+      <h1>Daedalus</h1>
       <p class="sub" id="auth-sub">Sign in to continue</p>
       <div class="auth-error" id="auth-error"></div>
       <form id="auth-form" onsubmit="return false;">
@@ -284,7 +284,7 @@
           <div class="input-row">
             <button type="button" class="icon-btn" id="cam-btn" title="Attach (Premium)">+</button>
             <input type="file" id="file-input" accept="image/*" capture="environment" />
-            <textarea id="message" rows="1" placeholder="Message Nebula 1…"></textarea>
+            <textarea id="message" rows="1" placeholder="Message Daedalus…"></textarea>
             <button type="button" class="btn" id="reset-btn">Reset</button>
             <button type="button" class="btn" id="send-btn">Send</button>
           </div>
@@ -423,7 +423,7 @@
     function addMessage(role, text) {
       const div = document.createElement("div");
       div.className = "msg " + role;
-      const roleLabel = role === "user" ? "You" : role === "ai" ? "Nebula 1" : "System";
+      const roleLabel = role === "user" ? "You" : role === "ai" ? "Daedalus" : "System";
       div.innerHTML = '<div class="role">' + roleLabel + '</div><div class="body"></div>' + (role === "ai" ? '<hr class="sep" />' : "");
       div.querySelector(".body").textContent = text;
       chatEl.appendChild(div);
@@ -432,7 +432,7 @@
     function showTyping() {
       const div = document.createElement("div");
       div.className = "msg ai"; div.id = "typing";
-      div.innerHTML = '<div class="role">Nebula 1</div><div class="typing"><span></span><span></span><span></span></div>';
+      div.innerHTML = '<div class="role">Daedalus</div><div class="typing"><span></span><span></span><span></span></div>';
       chatEl.appendChild(div); chatEl.scrollTop = chatEl.scrollHeight;
     }
     function hideTyping() { const t = document.getElementById("typing"); if (t) t.remove(); }
@@ -537,7 +537,7 @@
 
     editNameBtn.addEventListener("click", async function () {
       const current = localStorage.getItem("nebula_name") || "";
-      const next = prompt("What should Nebula call you?", current);
+      const next = prompt("What should Daedalus call you?", current);
       if (next === null) return;
       const name = next.trim();
       if (!name) { alert("Name can't be empty"); return; }
@@ -612,7 +612,7 @@
         closeSidebar();
         await refreshConversations();
         chatEl.innerHTML = "";
-        addMessage("system", "System ready · Nebula 1");
+        addMessage("system", "System ready · Daedalus");
       } catch (err) { addMessage("system", "Could not create chat: " + err.message); }
     }
 
@@ -631,18 +631,18 @@
 
     async function loadHistory() {
       chatEl.innerHTML = "";
-      if (!currentConvId) { addMessage("system", "System ready · Nebula 1"); return; }
+      if (!currentConvId) { addMessage("system", "System ready · Daedalus 1"); return; }
       try {
         const res = await fetch("/history?conversation_id=" + currentConvId, { headers: authHeaders() });
         if (res.status === 401) { clearToken(); showAuth(); return; }
         const data = await res.json();
         if (!data.messages || !data.messages.length) {
-          addMessage("system", "System ready · Nebula 1"); return;
+          addMessage("system", "System ready · Daedalus 1"); return;
         }
         data.messages.forEach(function (m) {
           addMessage(m.role === "assistant" ? "ai" : "user", m.content);
         });
-      } catch (e) { addMessage("system", "System ready · Nebula 1"); }
+      } catch (e) { addMessage("system", "System ready · Daedalus"); }
     }
 
     async function sendText() {
@@ -704,7 +704,7 @@
       const res = await fetch("/reset", { method: "POST", headers: authHeaders(), body: form });
       if (res.status === 401) { clearToken(); showAuth(); return; }
       chatEl.innerHTML = "";
-      addMessage("system", "System ready · Nebula 1");
+      addMessage("system", "System ready · Daedalus");
       refreshConversations();
     }
 
