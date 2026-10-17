@@ -768,8 +768,15 @@ async def execute_python_rag(query: str) -> List[Dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# User Authentication & History
+# Home Route & User Authentication
 # ---------------------------------------------------------------------------
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse(
+        "index.html", {"request": request, "model_name": MODEL_NAME}
+    )
+
+
 @app.post("/register")
 async def register(
     email: str = Form(...),
@@ -1057,7 +1064,7 @@ async def chat(
 
         lowered_text = user_text.lower().strip()
 
-        # Identity check
+        # Identity test check
         if lowered_text in ["hey chatgpt", "hello chatgpt", "hi chatgpt", "chatgpt"]:
             final = "I am Daedalus, developed by AstroVectAI, not ChatGPT. How can I help you today?"
             db.add(Message(conversation_id=conv.id, role="assistant", content=final))
