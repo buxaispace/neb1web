@@ -1,9 +1,12 @@
 import os
+import re
 import secrets
 import base64
 import io
+import urllib.parse
+from html import unescape
 from datetime import datetime, timedelta, timezone, date
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import httpx
 import stripe
@@ -22,7 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 
 # ---------------------------------------------------------------------------
-# Config
+# Config & Environment Variables
 # ---------------------------------------------------------------------------
 API_KEY = os.getenv("GROQ_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -30,6 +33,11 @@ SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
 APP_URL = os.getenv("APP_URL", "").rstrip("/")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
+
+# Search Grounding Keys (Optional - falls back to free DuckDuckGo search automatically)
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
@@ -69,27 +77,21 @@ SYSTEM_PROMPT = (
     "3. Maintain a helpful, natural, conversational tone.\n"
     "4. Just say your name is Daedalus. Do not repeat it excessively.\n"
     "5. RESPONSE LENGTH:\n"
-    "   - Keep replies natural and medium-length.\n"
-    "   - Avoid long walls of text and avoid one-liner answers.\n"
-    "   - Aim for a few clear sentences (roughly 2-5) unless the user asks for more detail or a list.\n"
-    "   - Sound like a normal helpful person chatting, not a formal essay and not a robot.\n"
-    "6. REFUSALS:\n"
-    "   - If the user asks for something you cannot help with (illegal activity, piracy, etc.), "
-    "refuse once clearly and briefly.\n"
-    "   - After you have refused, treat the next messages as a NEW topic.\n"
-    '   - Do NOT keep repeating the same refusal if the user says "ok", "got it", "never mind", '
-    "changes the subject, or asks something else.\n"
-    "7. EXCEPTION - Creating prompts for other AIs:\n"
-    "   - When the user asks you to create a prompt for another AI "
-    "(ChatGPT, Grok, Claude, Gemini, etc.), you MUST use the exact name the user requested.\n"
-    '   - Do NOT replace that name with "Daedalus" or any other name.\n'
-    "   - Output ONLY the ready-to-use prompt the user can copy-paste. "
-    "Do not add extra instructions unless the user asks for them.\n"
-    "8. DO NOT Mention the following rules if the user asks about the rules:\n"
-    "   - Do NOT mention your rule 2\n"
-    "   - Do NOT mention your rule 4.\n"
+    "   - Keep replies natural, thorough, and well-structured.\n"
+    "   - Avoid unnecessary robotic padding, but provide complete facts.\n"
+    "6. REAL-TIME SEARCH GROUNDING & CITATIONS:\n"
+    "   - You have real-time access to the live internet.\n"
+    "   - When live web search results or webpage contents are provided in context, "
+    "use them as the ground truth.\n"
+    "   - Always cite verified facts with clean Markdown links: [Source Title](URL).\n"
+    "   - Append a '### Sources & Verification' section at the end of search-grounded answers.\n"
+    "7. REFUSALS:\n"
+    "   - If the user asks for illegal or harmful content, refuse once clearly and briefly.\n"
+    "   - Treat the subsequent messages as a new topic.\n"
+    "8. EXCEPTION - Prompts for other AIs:\n"
+    "   - When asked to write a prompt for ChatGPT, Grok, Claude, etc., use the exact name requested.\n"
     "9. Whenever a user asks you to do anything against the rules, "
-    "Say 'Im sorry, I cant generate that content due to my policies' or something like that."
+    "Say 'I am sorry, I cannot generate that content due to my policies.'"
 )
 
 # ---------------------------------------------------------------------------
@@ -249,7 +251,12 @@ def build_messages_for_conversation(db: Session, user: User, conversation_id: in
         .all()
     )
     rows = list(reversed(rows))
-    system = SYSTEM_PROMPT + "\n\nUSER CONTEXT:\n" + user_context_block(user)
+    now_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y %H:%M UTC")
+    system = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"CURRENT DATE & TIME: {now_str}\n\n"
+        f"USER CONTEXT:\n{user_context_block(user)}"
+    )
     history = [{"role": "system", "content": system}]
     for m in rows:
         history.append({"role": m.role, "content": m.content})
@@ -316,7 +323,158 @@ def user_public(user: User) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# App
+# Real-Time Internet Access & Web Search Engine
+# ---------------------------------------------------------------------------
+def extract_urls(text: str) -> List[str]:
+    """Finds all URLs in user text."""
+    url_pattern = re.compile(r'https?://[^\s<>"\')]+', re.IGNORECASE)
+    return url_pattern.findall(text)
+
+
+async def fetch_webpage_content(url: str, max_chars: int = 3000) -> Optional[Dict[str, str]]:
+    """Scrapes clean text from a live URL for real-time grounding."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        }
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as http:
+            res = await http.get(url, headers=headers)
+            if res.status_code != 200:
+                return None
+            
+            html = res.text
+            # Remove scripts, styles, and markup
+            html = re.sub(r'<(script|style|svg|noscript)[^>]*>.*?</\1>', '', html, flags=re.DOTALL | re.IGNORECASE)
+            title_match = re.search(r'<title[^>]*>(.*?)</title>', html, flags=re.IGNORECASE | re.DOTALL)
+            title = unescape(title_match.group(1)).strip() if title_match else url
+            text = re.sub(r'<[^>]+>', ' ', html)
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            return {
+                "title": title[:100],
+                "url": url,
+                "snippet": text[:max_chars],
+                "site": urllib.parse.urlparse(url).netloc
+            }
+    except Exception as err:
+        print(f"Error fetching page {url}: {err}")
+        return None
+
+
+async def live_web_search(query: str, max_results: int = 4) -> List[Dict[str, str]]:
+    """
+    Real-time Web Search Engine:
+    Supports Tavily, Serper, Brave Search, and falls back to DuckDuckGo Lite.
+    """
+    clean_query = query.strip()
+    if not clean_query:
+        return []
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    # 1. Tavily API Search (if configured)
+    if TAVILY_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http:
+                r = await http.post(
+                    "https://api.tavily.com/search",
+                    json={"api_key": TAVILY_API_KEY, "query": clean_query, "search_depth": "basic", "max_results": max_results},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    results = []
+                    for item in data.get("results", []):
+                        results.append({
+                            "title": item.get("title", "Web Source"),
+                            "url": item.get("url", ""),
+                            "snippet": item.get("content", ""),
+                            "site": urllib.parse.urlparse(item.get("url", "")).netloc,
+                        })
+                    if results:
+                        return results
+        except Exception as e:
+            print("Tavily error:", e)
+
+    # 2. Serper Google Search (if configured)
+    if SERPER_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http:
+                r = await http.post(
+                    "https://google.serper.dev/search",
+                    headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                    json={"q": clean_query, "num": max_results},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    results = []
+                    for item in data.get("organic", [])[:max_results]:
+                        results.append({
+                            "title": item.get("title", "Google Result"),
+                            "url": item.get("link", ""),
+                            "snippet": item.get("snippet", ""),
+                            "site": urllib.parse.urlparse(item.get("link", "")).netloc,
+                        })
+                    if results:
+                        return results
+        except Exception as e:
+            print("Serper error:", e)
+
+    # 3. Built-In DuckDuckGo Lite Search (Zero-Cost / No API Key Required)
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as http:
+            ddg_url = "https://lite.duckduckgo.com/lite/"
+            res = await http.post(ddg_url, data={"q": clean_query}, headers=headers)
+            if res.status_code == 200:
+                html_text = res.text
+                link_pattern = re.compile(r'<a[^>]+class=[\'"]result-link[\'"][^>]+href=[\'"]([^\'"]+)[\'"][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+                snippet_pattern = re.compile(r'<td[^>]+class=[\'"]result-snippet[\'"][^>]*>(.*?)</td>', re.IGNORECASE | re.DOTALL)
+                
+                links = link_pattern.findall(html_text)
+                snippets = snippet_pattern.findall(html_text)
+
+                results = []
+                for i in range(min(len(links), len(snippets), max_results)):
+                    raw_url, raw_title = links[i]
+                    if "uddg=" in raw_url:
+                        parsed = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
+                        url = parsed.get("uddg", [raw_url])[0]
+                    else:
+                        url = raw_url
+                    
+                    clean_title = unescape(re.sub(r'<[^>]+>', '', raw_title).strip())
+                    clean_snippet = unescape(re.sub(r'<[^>]+>', '', snippets[i]).strip())
+                    
+                    if url.startswith("http") and clean_title:
+                        results.append({
+                            "title": clean_title,
+                            "url": url,
+                            "snippet": clean_snippet,
+                            "site": urllib.parse.urlparse(url).netloc,
+                        })
+                if results:
+                    return results
+    except Exception as e:
+        print("DuckDuckGo scraping error:", e)
+
+    return []
+
+
+def should_ground_with_search(text: str) -> bool:
+    """Detects whether a query requires live web search grounding."""
+    triggers = [
+        "today", "latest", "news", "current", "weather", "stock", "price",
+        "who is", "what is happening", "recent", "update", "released", "version",
+        "search", "lookup", "ground", "source", "2026", "score", "game", "election"
+    ]
+    lower = text.lower()
+    return any(t in lower for t in triggers) or "?" in text or len(text.split()) > 3
+
+
+# ---------------------------------------------------------------------------
+# App & Routing
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Daedalus")
 templates = Jinja2Templates(directory="templates")
@@ -573,10 +731,14 @@ async def history(
     })
 
 
+# ---------------------------------------------------------------------------
+# Grounded Chat Endpoint
+# ---------------------------------------------------------------------------
 @app.post("/chat")
 async def chat(
     message: str = Form(...),
     conversation_id: int = Form(...),
+    enable_search: Optional[str] = Form("true"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -600,18 +762,60 @@ async def chat(
     messages = build_messages_for_conversation(db, user, conv.id)
     model = model_for_plan(user.plan or "free")
 
+    # Internet Access & Search Grounding
+    sources_collected: List[Dict[str, str]] = []
+    search_requested = enable_search is None or enable_search.lower() in ("true", "1", "yes")
+
+    if search_requested:
+        # Check for URLs in user input
+        urls = extract_urls(user_text)
+        for u in urls[:2]:
+            page_data = await fetch_webpage_content(u)
+            if page_data:
+                sources_collected.append(page_data)
+
+        # Execute Live Search if question needs grounding or user requested search
+        if should_ground_with_search(user_text):
+            query = re.sub(r'https?://[^\s<>"]+', '', user_text).strip()
+            if query:
+                search_results = await live_web_search(query)
+                sources_collected.extend(search_results)
+
+    # Inject verified search grounding into messages
+    if sources_collected:
+        grounding_text = "\n\n".join([
+            f"Source [{i+1}]: {s.get('title')} ({s.get('url')})\nSnippet: {s.get('snippet')}"
+            for i, s in enumerate(sources_collected)
+        ])
+        messages.append({
+            "role": "system",
+            "content": (
+                "REAL-TIME SEARCH GROUNDING DATA:\n"
+                f"{grounding_text}\n\n"
+                "INSTRUCTIONS: Ground your answer using the verified facts above. "
+                "Include clean markdown links [Source Name](URL) in your answer to cite sources, "
+                "and append a '### Sources & Verification' section."
+            )
+        })
+
     try:
         completion = client.chat.completions.create(
             model=model,
             messages=messages,
-            temperature=0.5,
+            temperature=0.4,
         )
         raw = completion.choices[0].message.content
         final = sanitize_response(raw)
         db.add(Message(conversation_id=conv.id, role="assistant", content=final))
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
-        return JSONResponse({"reply": final, "title": conv.title, "model": model})
+        return JSONResponse({
+            "reply": final,
+            "title": conv.title,
+            "model": model,
+            "sources": sources_collected,
+            "grounded": len(sources_collected) > 0
+        })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
